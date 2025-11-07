@@ -185,3 +185,98 @@ class S3Service:
         except ClientError as e:
             log_exception(logger, e, f"Cannot access bucket: {self.bucket_name}")
             raise
+
+    def file_exists(self, file_key: str) -> bool:
+        """
+        Check if a file exists in S3.
+
+        Args:
+            file_key: S3 object key
+
+        Returns:
+            True if file exists, False otherwise
+        """
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=file_key)
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                return False
+            log_exception(logger, e, f"Error checking file existence: {file_key}")
+            raise
+
+    def get_file_metadata(self, file_key: str) -> Optional[S3FileMetadata]:
+        """
+        Get metadata for a specific file.
+
+        Args:
+            file_key: S3 object key
+
+        Returns:
+            S3FileMetadata object if file exists, None otherwise
+        """
+        try:
+            response = self.s3_client.head_object(Bucket=self.bucket_name, Key=file_key)
+
+            return S3FileMetadata(
+                key=file_key,
+                size=response["ContentLength"],
+                last_modified=response["LastModified"],
+                etag=response["ETag"].strip('"'),
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                return None
+            log_exception(logger, e, f"Error getting file metadata: {file_key}")
+            raise
+
+    def search_files_by_name(self, filename: str, prefix: Optional[str] = None) -> List[S3FileMetadata]:
+        """
+        Search for files by filename across the bucket.
+
+        Args:
+            filename: Filename to search for (will match files ending with this name)
+            prefix: Optional prefix to narrow search
+
+        Returns:
+            List of S3FileMetadata objects matching the filename
+        """
+        try:
+            logger.info(f"Searching for files matching: {filename}")
+
+            files = []
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+
+            pagination_config = {
+                "Bucket": self.bucket_name,
+            }
+
+            if prefix:
+                pagination_config["Prefix"] = prefix
+
+            page_iterator = paginator.paginate(**pagination_config)
+
+            for page in page_iterator:
+                if "Contents" not in page:
+                    continue
+
+                for obj in page["Contents"]:
+                    # Match files ending with the filename or containing it
+                    if obj["Key"].endswith(filename) or filename in obj["Key"]:
+                        file_metadata = S3FileMetadata(
+                            key=obj["Key"],
+                            size=obj["Size"],
+                            last_modified=obj["LastModified"],
+                            etag=obj["ETag"].strip('"'),
+                        )
+                        files.append(file_metadata)
+
+            logger.info(f"Found {len(files)} files matching '{filename}'")
+            return files
+
+        except ClientError as e:
+            log_exception(logger, e, f"Failed to search for files: {filename}")
+            raise
+        except Exception as e:
+            log_exception(logger, e, f"Unexpected error searching for files: {filename}")
+            raise

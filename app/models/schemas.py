@@ -120,3 +120,76 @@ class HealthCheckResponse(BaseModel):
     status: str = Field(..., description="Service status")
     timestamp: datetime = Field(..., description="Current timestamp")
     version: str = Field(..., description="Service version")
+
+
+class FileDetailsRequest(BaseModel):
+    """Request model for getting file details."""
+
+    filename: str = Field(
+        ..., description="Filename to search for (can be just the filename or full S3 key)"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "filename": "invoice_001.pdf",
+            }
+        }
+
+
+class FileSigningInfo(BaseModel):
+    """Information about file signing status."""
+
+    original_file_key: str = Field(..., description="Original file S3 key")
+    original_file_size: int = Field(..., description="Original file size in bytes")
+    original_upload_date: datetime = Field(..., description="Original file upload date")
+    is_signed: bool = Field(..., description="Whether file has been signed")
+    signed_file_key: Optional[str] = Field(None, description="Signed P7M file S3 key")
+    signed_file_size: Optional[int] = Field(None, description="Signed file size in bytes")
+    signing_timestamp: Optional[datetime] = Field(None, description="When the file was signed")
+    file_hash: Optional[str] = Field(None, description="File hash")
+    signature: Optional[str] = Field(None, description="Digital signature")
+
+
+class FileDetailsResponse(BaseModel):
+    """Response with file details and signing information."""
+
+    found: bool = Field(..., description="Whether the file was found")
+    files: List[FileSigningInfo] = Field(..., description="List of matching files with signing info")
+    total_matches: int = Field(..., description="Total number of matches found")
+
+
+class FileListRequest(BaseModel):
+    """Request model for getting file list with signing info."""
+
+    start_date: datetime = Field(
+        ..., description="Start date for filtering files (upload date)"
+    )
+    end_date: datetime = Field(
+        ..., description="End date for filtering files (upload date)"
+    )
+    prefix: Optional[str] = Field(
+        None, description="Optional S3 prefix to filter files"
+    )
+    signed_only: bool = Field(
+        False, description="Only return files that have been signed"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "start_date": "2025-01-01T00:00:00Z",
+                "end_date": "2025-01-31T23:59:59Z",
+                "prefix": "documents/",
+                "signed_only": False,
+            }
+        }
+
+
+class FileListResponse(BaseModel):
+    """Response with list of files and their signing information."""
+
+    total_files: int = Field(..., description="Total number of files found")
+    signed_files: int = Field(..., description="Number of signed files")
+    unsigned_files: int = Field(..., description="Number of unsigned files")
+    files: List[FileSigningInfo] = Field(..., description="List of files with signing info")

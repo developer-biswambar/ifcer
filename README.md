@@ -40,6 +40,10 @@ ifcer/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── schemas.py       # Pydantic models
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── processing.py    # Processing endpoints (health, process, recertify)
+│   │   └── files.py         # File query endpoints (file-details, files-list)
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── s3_service.py    # S3 operations
@@ -186,6 +190,10 @@ docker-compose up -d
 
 ## API Endpoints
 
+The API is organized into two main groups:
+- **Processing**: Endpoints for file certification and processing
+- **Files**: Endpoints for querying file status and certification information
+
 ### Health Check
 
 ```bash
@@ -193,6 +201,19 @@ GET /health
 ```
 
 Checks connectivity to S3 and vendor API.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-01-15T10:00:00Z",
+  "version": "0.1.0"
+}
+```
+
+---
+
+## Processing Endpoints
 
 ### Recertify Single File
 
@@ -218,10 +239,12 @@ Recertifies a single file from S3 by its key. Useful for:
   "file_hash": "a3b2c1d4e5f6...",
   "signature": "sig_xyz123...",
   "timestamp": "2025-01-15T10:30:00Z",
-  "p7m_file_key": "documents/2025/invoice_001.pdf.p7m",
+  "p7m_file_key": "signed/invoice_001.pdf.p7m",
   "error_message": null
 }
 ```
+
+**Note:** Signed P7M files are stored in the `signed/` folder in S3.
 
 ### Batch Process Files
 
@@ -251,6 +274,141 @@ Processes all files in the S3 bucket uploaded between the specified dates.
   "duration_seconds": 330.5
 }
 ```
+
+---
+
+## Files Query Endpoints
+
+### Get File Details
+
+```bash
+POST /file-details
+Content-Type: application/json
+
+{
+  "filename": "invoice_001.pdf"
+}
+```
+
+Search for files by name and get their certification status. Returns all files matching the given filename.
+
+**Response:**
+```json
+{
+  "found": true,
+  "total_matches": 2,
+  "files": [
+    {
+      "original_file_key": "documents/2025/invoice_001.pdf",
+      "original_file_size": 245632,
+      "original_upload_date": "2025-01-10T08:30:00Z",
+      "is_signed": true,
+      "signed_file_key": "signed/invoice_001.pdf.p7m",
+      "signed_file_size": 248192,
+      "signing_timestamp": "2025-01-10T09:00:00Z",
+      "file_hash": null,
+      "signature": null
+    }
+  ]
+}
+```
+
+### Get Files List with Signing Info
+
+```bash
+POST /files-list
+Content-Type: application/json
+
+{
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-01-31T23:59:59Z",
+  "prefix": "documents/",
+  "signed_only": false
+}
+```
+
+Get all files in a date range with their certification status. Useful for:
+- Auditing which files have been certified
+- Finding files that need recertification
+- Generating compliance reports
+
+**Response:**
+```json
+{
+  "total_files": 150,
+  "signed_files": 145,
+  "unsigned_files": 5,
+  "files": [
+    {
+      "original_file_key": "documents/2025/invoice_001.pdf",
+      "original_file_size": 245632,
+      "original_upload_date": "2025-01-10T08:30:00Z",
+      "is_signed": true,
+      "signed_file_key": "signed/invoice_001.pdf.p7m",
+      "signed_file_size": 248192,
+      "signing_timestamp": "2025-01-10T09:00:00Z",
+      "file_hash": null,
+      "signature": null
+    },
+    {
+      "original_file_key": "documents/2025/invoice_002.pdf",
+      "original_file_size": 198432,
+      "original_upload_date": "2025-01-11T14:20:00Z",
+      "is_signed": false,
+      "signed_file_key": null,
+      "signed_file_size": null,
+      "signing_timestamp": null,
+      "file_hash": null,
+      "signature": null
+    }
+  ]
+}
+```
+
+**Parameters:**
+- `signed_only`: Set to `true` to only return files that have been signed
+
+---
+
+## File Storage Structure
+
+The service maintains a clean separation between original files and signed files in S3:
+
+### Original Files
+- Location: Anywhere in your S3 bucket (e.g., `documents/2025/invoice_001.pdf`)
+- These files remain **unchanged** after processing
+- Used as source files for certification
+
+### Signed Files (P7M)
+- Location: `signed/` folder in the same S3 bucket
+- Naming: `signed/<original_filename>.p7m`
+- Example: `signed/invoice_001.pdf.p7m`
+- Content-Type: `application/pkcs7-mime`
+
+### Example Structure After Processing
+
+```
+s3://your-bucket/
+├── documents/
+│   ├── 2025/
+│   │   ├── invoice_001.pdf          ← Original file
+│   │   ├── invoice_002.pdf          ← Original file
+│   │   └── contract_001.pdf         ← Original file
+│   └── archive/
+│       └── old_doc.pdf              ← Original file
+└── signed/
+    ├── invoice_001.pdf.p7m          ← Signed/certified file
+    ├── invoice_002.pdf.p7m          ← Signed/certified file
+    ├── contract_001.pdf.p7m         ← Signed/certified file
+    └── old_doc.pdf.p7m              ← Signed/certified file
+```
+
+This structure makes it easy to:
+- Identify which files have been certified (check if corresponding file exists in `signed/`)
+- Keep original files for reference
+- Submit P7M files to the Italian register
+
+---
 
 ## mTLS Certificate Setup
 
