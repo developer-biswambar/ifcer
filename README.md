@@ -479,6 +479,130 @@ The vendor API requires mutual TLS (mTLS) authentication. You need three files:
 
 Mount these files into the Docker container at `/certs/` or specify custom paths via environment variables.
 
+---
+
+## DynamoDB Setup
+
+The service uses DynamoDB to store certification metadata including file hashes, digital signatures, timestamps, and processing status.
+
+### Table Schema
+
+Create a DynamoDB table with the following configuration:
+
+**Table Name:** `ifcer-certifications` (or custom name via `DYNAMODB_TABLE_NAME` env var)
+
+**Primary Key:**
+- **Partition Key:** `file_key` (String) - The S3 key of the original file
+- **Sort Key:** `processing_timestamp` (String) - ISO8601 timestamp of when the file was processed
+
+**Global Secondary Indexes (GSI):**
+
+1. **filename-index** - For searching by filename
+   - Partition Key: `filename` (String)
+   - Sort Key: `processing_timestamp` (String)
+   - Projection: ALL
+
+2. **date-index** - For querying by date range
+   - Partition Key: `date_partition` (String) - Format: YYYY-MM
+   - Sort Key: `processing_timestamp` (String)
+   - Projection: ALL
+
+**Optional: TTL Configuration**
+- Attribute: `ttl` (Number)
+- Enable TTL to automatically delete old records (configure via `DYNAMODB_TTL_DAYS` env var)
+
+### Attributes Stored
+
+```json
+{
+  "file_key": "documents/2025/invoice_001.pdf",
+  "processing_timestamp": "2025-01-15T10:30:00.000Z",
+  "filename": "invoice_001.pdf",
+  "date_partition": "2025-01",
+  "file_hash": "a3b2c1d4e5f6...",
+  "hash_algorithm": "sha256",
+  "digital_signature": "sig_xyz123...",
+  "vendor_timestamp": "2025-01-15T10:30:05.000Z",
+  "signed_file_key": "signed/invoice_001.pdf.p7m",
+  "file_size": 245632,
+  "signed_file_size": 248192,
+  "status": "completed",
+  "ttl": 1735689000
+}
+```
+
+### Creating the Table (AWS CLI)
+
+```bash
+# Create the main table
+aws dynamodb create-table \
+    --table-name ifcer-certifications \
+    --attribute-definitions \
+        AttributeName=file_key,AttributeType=S \
+        AttributeName=processing_timestamp,AttributeType=S \
+        AttributeName=filename,AttributeType=S \
+        AttributeName=date_partition,AttributeType=S \
+    --key-schema \
+        AttributeName=file_key,KeyType=HASH \
+        AttributeName=processing_timestamp,KeyType=RANGE \
+    --billing-mode PAY_PER_REQUEST \
+    --global-secondary-indexes \
+        '[
+            {
+                "IndexName": "filename-index",
+                "KeySchema": [
+                    {"AttributeName": "filename", "KeyType": "HASH"},
+                    {"AttributeName": "processing_timestamp", "KeyType": "RANGE"}
+                ],
+                "Projection": {"ProjectionType": "ALL"}
+            },
+            {
+                "IndexName": "date-index",
+                "KeySchema": [
+                    {"AttributeName": "date_partition", "KeyType": "HASH"},
+                    {"AttributeName": "processing_timestamp", "KeyType": "RANGE"}
+                ],
+                "Projection": {"ProjectionType": "ALL"}
+            }
+        ]' \
+    --region eu-south-1
+
+# Optional: Enable TTL for automatic record deletion
+aws dynamodb update-time-to-live \
+    --table-name ifcer-certifications \
+    --time-to-live-specification \
+        "Enabled=true,AttributeName=ttl" \
+    --region eu-south-1
+```
+
+### IAM Permissions Required
+
+The ECS task role needs these DynamoDB permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:BatchGetItem",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:eu-south-1:ACCOUNT_ID:table/ifcer-certifications",
+        "arn:aws:dynamodb:eu-south-1:ACCOUNT_ID:table/ifcer-certifications/index/*"
+      ]
+    }
+  ]
+}
+```
+
+---
+
 ## AWS ECS Deployment
 
 ### Task Definition Example

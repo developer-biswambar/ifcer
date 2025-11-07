@@ -12,12 +12,15 @@ from app.models.schemas import (
     FileSigningInfo,
 )
 from app.services.s3_service import S3Service
+from app.services.dynamodb_service import DynamoDBService
 from app.utils.logger import setup_logger, log_exception
+from datetime import datetime
 
 logger = setup_logger(__name__)
 
-# Initialize service
+# Initialize services
 s3_service = S3Service()
+dynamodb_service = DynamoDBService()
 
 router = APIRouter()
 
@@ -61,23 +64,41 @@ async def get_file_details(request: FileDetailsRequest):
             if file_meta.key.startswith("signed/"):
                 continue
 
-            # Check if corresponding signed file exists
-            original_filename = os.path.basename(file_meta.key)
-            signed_file_key = f"signed/{original_filename}.p7m"
+            # Get certification metadata from DynamoDB
+            cert_data = dynamodb_service.get_certification(file_meta.key)
 
-            signed_metadata = s3_service.get_file_metadata(signed_file_key)
-
-            file_info = FileSigningInfo(
-                original_file_key=file_meta.key,
-                original_file_size=file_meta.size,
-                original_upload_date=file_meta.last_modified,
-                is_signed=signed_metadata is not None,
-                signed_file_key=signed_file_key if signed_metadata else None,
-                signed_file_size=signed_metadata.size if signed_metadata else None,
-                signing_timestamp=signed_metadata.last_modified if signed_metadata else None,
-                file_hash=None,  # Not available without processing
-                signature=None,  # Not available without additional metadata storage
-            )
+            if cert_data:
+                # File has been certified - use DynamoDB data
+                file_info = FileSigningInfo(
+                    original_file_key=file_meta.key,
+                    original_file_size=file_meta.size,
+                    original_upload_date=file_meta.last_modified,
+                    is_signed=cert_data.get("status") == "completed",
+                    signed_file_key=cert_data.get("signed_file_key"),
+                    signed_file_size=cert_data.get("signed_file_size"),
+                    signing_timestamp=datetime.fromisoformat(cert_data["vendor_timestamp"]) if cert_data.get("vendor_timestamp") else None,
+                    processing_timestamp=datetime.fromisoformat(cert_data["processing_timestamp"]) if cert_data.get("processing_timestamp") else None,
+                    file_hash=cert_data.get("file_hash"),
+                    hash_algorithm=cert_data.get("hash_algorithm"),
+                    signature=cert_data.get("digital_signature"),
+                    status=cert_data.get("status"),
+                )
+            else:
+                # No certification record - file not yet processed
+                file_info = FileSigningInfo(
+                    original_file_key=file_meta.key,
+                    original_file_size=file_meta.size,
+                    original_upload_date=file_meta.last_modified,
+                    is_signed=False,
+                    signed_file_key=None,
+                    signed_file_size=None,
+                    signing_timestamp=None,
+                    processing_timestamp=None,
+                    file_hash=None,
+                    hash_algorithm=None,
+                    signature=None,
+                    status=None,
+                )
 
             file_info_list.append(file_info)
 
@@ -131,42 +152,70 @@ async def get_files_list(request: FileListRequest):
             prefix=request.prefix,
         )
 
+        # Filter out files in signed/ folder
+        original_files = [f for f in files if not f.key.startswith("signed/")]
+
+        # Batch get certification data from DynamoDB for better performance
+        file_keys = [f.key for f in original_files]
+        certifications = dynamodb_service.batch_get_certifications(file_keys)
+
         file_info_list: List[FileSigningInfo] = []
         signed_count = 0
         unsigned_count = 0
 
-        for file_meta in files:
-            # Skip files already in signed/ folder
-            if file_meta.key.startswith("signed/"):
-                continue
+        for file_meta in original_files:
+            # Get certification data if available
+            cert_data = certifications.get(file_meta.key)
 
-            # Check if corresponding signed file exists
-            original_filename = os.path.basename(file_meta.key)
-            signed_file_key = f"signed/{original_filename}.p7m"
+            if cert_data:
+                # File has certification data
+                is_signed = cert_data.get("status") == "completed"
 
-            signed_metadata = s3_service.get_file_metadata(signed_file_key)
-            is_signed = signed_metadata is not None
+                # If signed_only filter is enabled, skip non-completed files
+                if request.signed_only and not is_signed:
+                    continue
 
-            # If signed_only filter is enabled, skip unsigned files
-            if request.signed_only and not is_signed:
-                continue
+                if is_signed:
+                    signed_count += 1
+                else:
+                    unsigned_count += 1
 
-            if is_signed:
-                signed_count += 1
+                file_info = FileSigningInfo(
+                    original_file_key=file_meta.key,
+                    original_file_size=file_meta.size,
+                    original_upload_date=file_meta.last_modified,
+                    is_signed=is_signed,
+                    signed_file_key=cert_data.get("signed_file_key"),
+                    signed_file_size=cert_data.get("signed_file_size"),
+                    signing_timestamp=datetime.fromisoformat(cert_data["vendor_timestamp"]) if cert_data.get("vendor_timestamp") else None,
+                    processing_timestamp=datetime.fromisoformat(cert_data["processing_timestamp"]) if cert_data.get("processing_timestamp") else None,
+                    file_hash=cert_data.get("file_hash"),
+                    hash_algorithm=cert_data.get("hash_algorithm"),
+                    signature=cert_data.get("digital_signature"),
+                    status=cert_data.get("status"),
+                )
             else:
+                # No certification record - file not yet processed
+                # If signed_only filter is enabled, skip unsigned files
+                if request.signed_only:
+                    continue
+
                 unsigned_count += 1
 
-            file_info = FileSigningInfo(
-                original_file_key=file_meta.key,
-                original_file_size=file_meta.size,
-                original_upload_date=file_meta.last_modified,
-                is_signed=is_signed,
-                signed_file_key=signed_file_key if signed_metadata else None,
-                signed_file_size=signed_metadata.size if signed_metadata else None,
-                signing_timestamp=signed_metadata.last_modified if signed_metadata else None,
-                file_hash=None,  # Not available without processing
-                signature=None,  # Not available without additional metadata storage
-            )
+                file_info = FileSigningInfo(
+                    original_file_key=file_meta.key,
+                    original_file_size=file_meta.size,
+                    original_upload_date=file_meta.last_modified,
+                    is_signed=False,
+                    signed_file_key=None,
+                    signed_file_size=None,
+                    signing_timestamp=None,
+                    processing_timestamp=None,
+                    file_hash=None,
+                    hash_algorithm=None,
+                    signature=None,
+                    status=None,
+                )
 
             file_info_list.append(file_info)
 

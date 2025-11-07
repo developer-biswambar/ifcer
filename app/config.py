@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
 
+    # AWS DynamoDB settings
+    dynamodb_table_name: str = "ifcer-certifications"
+    dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
+
     # Vendor API settings (mTLS)
     vendor_api_url: str
     vendor_mtls_cert_path: str = "/certs/client_cert.pem"

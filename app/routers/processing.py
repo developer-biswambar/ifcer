@@ -17,6 +17,7 @@ from app.models.schemas import (
 from app.services.s3_service import S3Service
 from app.services.hash_service import HashService
 from app.services.signature_service import SignatureService
+from app.services.dynamodb_service import DynamoDBService
 from app.utils.logger import setup_logger, log_exception
 from app import __version__
 
@@ -26,6 +27,7 @@ logger = setup_logger(__name__)
 s3_service = S3Service()
 hash_service = HashService()
 signature_service = SignatureService()
+dynamodb_service = DynamoDBService()
 
 router = APIRouter()
 
@@ -233,6 +235,7 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
 
         # Upload P7M file to S3 (if available)
         p7m_file_key = None
+        signed_file_size = None
         if p7m_content:
             # Create P7M file key in signed/ folder
             # Extract just the filename from the original key
@@ -243,6 +246,26 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
                 destination_key=p7m_file_key,
                 content_type="application/pkcs7-mime",
             )
+            signed_file_size = len(p7m_content)
+
+        # Save certification metadata to DynamoDB
+        if p7m_file_key:  # Only save if we have a signed file
+            try:
+                dynamodb_service.save_certification(
+                    file_key=file_key,
+                    file_hash=hash_info.hash_value,
+                    hash_algorithm=hash_info.hash_algorithm,
+                    digital_signature=sig_response.signature,
+                    vendor_timestamp=sig_response.timestamp,
+                    signed_file_key=p7m_file_key,
+                    file_size=hash_info.file_size,
+                    signed_file_size=signed_file_size,
+                    status="completed",
+                )
+                logger.info(f"Saved certification metadata to DynamoDB for: {file_key}")
+            except Exception as db_error:
+                # Log but don't fail the entire process if DynamoDB save fails
+                log_exception(logger, db_error, f"Failed to save metadata to DynamoDB for: {file_key}")
 
         logger.info(f"Successfully processed file: {file_key}")
 
@@ -258,6 +281,29 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
 
     except Exception as e:
         log_exception(logger, e, f"Failed to process file: {file_key}")
+
+        # Try to save failure to DynamoDB for audit trail
+        try:
+            # Get file metadata for size information
+            file_meta = s3_service.get_file_metadata(file_key)
+            file_size = file_meta.size if file_meta else 0
+
+            dynamodb_service.save_certification(
+                file_key=file_key,
+                file_hash="",  # Not available on failure
+                hash_algorithm=hash_service.algorithm,
+                digital_signature="",  # Not available on failure
+                vendor_timestamp=datetime.utcnow(),  # Use current time
+                signed_file_key="",  # Not available on failure
+                file_size=file_size,
+                signed_file_size=0,
+                status="failed",
+                error_message=str(e),
+            )
+            logger.info(f"Saved failure metadata to DynamoDB for: {file_key}")
+        except Exception as db_error:
+            # Log but don't cascade the failure
+            log_exception(logger, db_error, f"Failed to save failure metadata for: {file_key}")
 
         return FileProcessingResult(
             file_key=file_key,

@@ -146,9 +146,12 @@ class FileSigningInfo(BaseModel):
     is_signed: bool = Field(..., description="Whether file has been signed")
     signed_file_key: Optional[str] = Field(None, description="Signed P7M file S3 key")
     signed_file_size: Optional[int] = Field(None, description="Signed file size in bytes")
-    signing_timestamp: Optional[datetime] = Field(None, description="When the file was signed")
-    file_hash: Optional[str] = Field(None, description="File hash")
-    signature: Optional[str] = Field(None, description="Digital signature")
+    signing_timestamp: Optional[datetime] = Field(None, description="When the file was signed by vendor")
+    processing_timestamp: Optional[datetime] = Field(None, description="When the file was processed")
+    file_hash: Optional[str] = Field(None, description="File hash value")
+    hash_algorithm: Optional[str] = Field(None, description="Hash algorithm used")
+    signature: Optional[str] = Field(None, description="Digital signature from vendor")
+    status: Optional[str] = Field(None, description="Processing status (completed/failed)")
 
 
 class FileDetailsResponse(BaseModel):
