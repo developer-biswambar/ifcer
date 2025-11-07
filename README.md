@@ -194,7 +194,36 @@ GET /health
 
 Checks connectivity to S3 and vendor API.
 
-### Process Files
+### Recertify Single File
+
+```bash
+POST /recertify
+Content-Type: application/json
+
+{
+  "file_key": "documents/2025/invoice_001.pdf"
+}
+```
+
+Recertifies a single file from S3 by its key. Useful for:
+- Recertifying files that previously failed
+- Re-signing files that need updated timestamps
+- Processing individual files on demand
+
+**Response:**
+```json
+{
+  "file_key": "documents/2025/invoice_001.pdf",
+  "status": "completed",
+  "file_hash": "a3b2c1d4e5f6...",
+  "signature": "sig_xyz123...",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "p7m_file_key": "documents/2025/invoice_001.pdf.p7m",
+  "error_message": null
+}
+```
+
+### Batch Process Files
 
 ```bash
 POST /process

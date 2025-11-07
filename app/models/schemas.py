@@ -38,6 +38,21 @@ class DateRangeRequest(BaseModel):
         }
 
 
+class SingleFileRequest(BaseModel):
+    """Request model for processing a single file."""
+
+    file_key: str = Field(
+        ..., description="S3 object key of the file to recertify"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "file_key": "documents/2025/invoice_001.pdf",
+            }
+        }
+
+
 class S3FileMetadata(BaseModel):
     """Metadata for an S3 file."""
 

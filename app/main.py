@@ -10,6 +10,7 @@ import os
 from app.config import settings
 from app.models.schemas import (
     DateRangeRequest,
+    SingleFileRequest,
     BatchProcessingResponse,
     FileProcessingResult,
     ProcessingStatus,
@@ -78,6 +79,47 @@ async def health_check():
     except Exception as e:
         log_exception(logger, e, "Health check failed")
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/recertify", response_model=FileProcessingResult)
+async def recertify_single_file(request: SingleFileRequest):
+    """
+    Recertify a single file from S3.
+
+    This endpoint allows you to process a single file by its S3 key, useful for:
+    - Recertifying files that previously failed
+    - Re-signing files that need updated timestamps
+    - Processing individual files on demand
+
+    The endpoint:
+    1. Downloads the file from S3 using the provided key
+    2. Computes the file hash
+    3. Sends hash to vendor API for digital signature and timestamp
+    4. Creates P7M file for Italian register submission
+    5. Uploads P7M file back to S3
+
+    Args:
+        request: SingleFileRequest with file_key
+
+    Returns:
+        FileProcessingResult with processing outcome
+    """
+    try:
+        logger.info(f"Recertifying single file: {request.file_key}")
+
+        # Process the single file
+        result = await process_single_file(request.file_key)
+
+        if result.status == ProcessingStatus.FAILED:
+            logger.error(f"Failed to recertify file: {request.file_key}")
+        else:
+            logger.info(f"Successfully recertified file: {request.file_key}")
+
+        return result
+
+    except Exception as e:
+        log_exception(logger, e, f"Recertification failed for: {request.file_key}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/process", response_model=BatchProcessingResponse)
