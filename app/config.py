@@ -22,10 +22,11 @@ class Settings(BaseSettings):
     dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
 
     # Vendor API settings (mTLS)
+    # Certificates are stored in S3 and loaded during application startup
     vendor_api_url: str
-    vendor_mtls_cert_path: str = "/certs/client_cert.pem"
-    vendor_mtls_key_path: str = "/certs/client_key.pem"
-    vendor_mtls_ca_path: Optional[str] = "/certs/ca_bundle.pem"
+    vendor_mtls_cert_s3_key: str = "certs/client_cert.pem"
+    vendor_mtls_key_s3_key: str = "certs/client_key.pem"
+    vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
 
     # Processing settings
     hash_algorithm: str = "sha256"  # Best practice for file integrity

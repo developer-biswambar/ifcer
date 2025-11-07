@@ -62,8 +62,8 @@ ifcer/
 
 - Python 3.11+
 - Docker (for containerization)
-- AWS Account with S3 access
-- Vendor mTLS certificates (cert, key, CA bundle)
+- AWS Account with S3 and DynamoDB access
+- Vendor mTLS certificates stored in S3 (cert, key, CA bundle)
 
 ## Configuration
 
@@ -75,12 +75,14 @@ All configuration is managed through environment variables. See `.env.example` f
 # AWS Configuration
 AWS_REGION=eu-south-1
 S3_BUCKET_NAME=your-bucket-name
+DYNAMODB_TABLE_NAME=ifcer-certifications
 
-# Vendor API Configuration
+# Vendor API Configuration (mTLS)
+# Certificates are stored in S3 and loaded during application startup
 VENDOR_API_URL=https://vendor-api.example.com
-VENDOR_MTLS_CERT_PATH=/certs/client_cert.pem
-VENDOR_MTLS_KEY_PATH=/certs/client_key.pem
-VENDOR_MTLS_CA_PATH=/certs/ca_bundle.pem
+VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 ```
 
 ### Optional Environment Variables
@@ -90,9 +92,8 @@ VENDOR_MTLS_CA_PATH=/certs/ca_bundle.pem
 APP_NAME=IFCER Batch Service
 LOG_LEVEL=INFO
 
-# AWS Credentials (if not using IAM role)
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
+# DynamoDB TTL (auto-delete old records)
+DYNAMODB_TTL_DAYS=365
 
 # Processing Settings
 HASH_ALGORITHM=sha256
@@ -154,15 +155,20 @@ docker build -t ifcer-service:latest .
 docker run -d \
   --name ifcer-service \
   -p 8000:8000 \
-  -v /path/to/certs:/certs:ro \
   -e AWS_REGION=eu-south-1 \
   -e S3_BUCKET_NAME=your-bucket-name \
+  -e DYNAMODB_TABLE_NAME=ifcer-certifications \
   -e VENDOR_API_URL=https://vendor-api.example.com \
-  -e VENDOR_MTLS_CERT_PATH=/certs/client_cert.pem \
-  -e VENDOR_MTLS_KEY_PATH=/certs/client_key.pem \
-  -e VENDOR_MTLS_CA_PATH=/certs/ca_bundle.pem \
+  -e VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem \
+  -e VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem \
+  -e VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem \
   ifcer-service:latest
 ```
+
+**Note:** When running locally, ensure your AWS credentials are available via:
+- AWS credentials file (`~/.aws/credentials`)
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- IAM role (when running in AWS)
 
 ### Using Docker Compose
 
@@ -176,10 +182,16 @@ services:
     build: .
     ports:
       - "8000:8000"
-    volumes:
-      - ./certs:/certs:ro
     env_file:
       - .env
+    environment:
+      - AWS_REGION=${AWS_REGION}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME}
+      - VENDOR_API_URL=${VENDOR_API_URL}
+      - VENDOR_MTLS_CERT_S3_KEY=${VENDOR_MTLS_CERT_S3_KEY}
+      - VENDOR_MTLS_KEY_S3_KEY=${VENDOR_MTLS_KEY_S3_KEY}
+      - VENDOR_MTLS_CA_S3_KEY=${VENDOR_MTLS_CA_S3_KEY}
     restart: unless-stopped
 ```
 
@@ -471,13 +483,84 @@ This structure makes it easy to:
 
 ## mTLS Certificate Setup
 
-The vendor API requires mutual TLS (mTLS) authentication. You need three files:
+The vendor API requires mutual TLS (mTLS) authentication. The service loads certificates from S3 during startup.
+
+### Required Certificates
 
 1. **Client Certificate** (`client_cert.pem`): Your certificate for authentication
 2. **Client Private Key** (`client_key.pem`): Private key for your certificate
 3. **CA Bundle** (`ca_bundle.pem`): Certificate authority bundle to verify vendor's certificate
 
-Mount these files into the Docker container at `/certs/` or specify custom paths via environment variables.
+### Uploading Certificates to S3
+
+Upload your mTLS certificates to the `certs/` folder in your S3 bucket:
+
+```bash
+# Upload client certificate
+aws s3 cp client_cert.pem s3://your-bucket-name/certs/client_cert.pem
+
+# Upload client private key
+aws s3 cp client_key.pem s3://your-bucket-name/certs/client_key.pem
+
+# Upload CA bundle
+aws s3 cp ca_bundle.pem s3://your-bucket-name/certs/ca_bundle.pem
+```
+
+### Certificate Loading Process
+
+When the application starts:
+1. Downloads certificates from S3 using the configured S3 keys
+2. Writes them to temporary files with secure permissions (read-only, 0o400)
+3. Uses these temporary files for mTLS authentication with the vendor API
+
+### S3 Bucket Security
+
+Ensure your S3 bucket has appropriate security:
+
+```bash
+# Set bucket policy to prevent public access
+aws s3api put-public-access-block \
+    --bucket your-bucket-name \
+    --public-access-block-configuration \
+        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+# Encrypt certificates at rest (optional)
+aws s3api put-bucket-encryption \
+    --bucket your-bucket-name \
+    --server-side-encryption-configuration \
+        '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}'
+```
+
+### IAM Permissions for Certificates
+
+The ECS task role needs S3 read permissions for the certificates:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name/certs/*"
+      ]
+    }
+  ]
+}
+```
+
+### Custom Certificate Paths
+
+To use different S3 keys for your certificates, set these environment variables:
+
+```bash
+VENDOR_MTLS_CERT_S3_KEY=custom/path/client_cert.pem
+VENDOR_MTLS_KEY_S3_KEY=custom/path/client_key.pem
+VENDOR_MTLS_CA_S3_KEY=custom/path/ca_bundle.pem
+```
 
 ---
 
@@ -577,12 +660,31 @@ aws dynamodb update-time-to-live \
 
 ### IAM Permissions Required
 
-The ECS task role needs these DynamoDB permissions:
+The ECS task role needs these permissions:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name"
+      ]
+    },
     {
       "Effect": "Allow",
       "Action": [
@@ -629,13 +731,11 @@ The ECS task role needs these DynamoDB permissions:
       "environment": [
         {"name": "AWS_REGION", "value": "eu-south-1"},
         {"name": "S3_BUCKET_NAME", "value": "your-bucket-name"},
-        {"name": "VENDOR_API_URL", "value": "https://vendor-api.example.com"}
-      ],
-      "secrets": [
-        {
-          "name": "VENDOR_MTLS_CERT_PATH",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:cert"
-        }
+        {"name": "DYNAMODB_TABLE_NAME", "value": "ifcer-certifications"},
+        {"name": "VENDOR_API_URL", "value": "https://vendor-api.example.com"},
+        {"name": "VENDOR_MTLS_CERT_S3_KEY", "value": "certs/client_cert.pem"},
+        {"name": "VENDOR_MTLS_KEY_S3_KEY", "value": "certs/client_key.pem"},
+        {"name": "VENDOR_MTLS_CA_S3_KEY", "value": "certs/ca_bundle.pem"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
@@ -689,11 +789,13 @@ The service includes comprehensive error handling and logging:
 
 ## Security Considerations
 
-1. **IAM Roles**: Use IAM roles for ECS tasks instead of hardcoded credentials
-2. **Secrets Management**: Store mTLS certificates in AWS Secrets Manager
-3. **Network Security**: Use private subnets with NAT gateway for ECS tasks
-4. **TLS**: All communication with vendor API uses mTLS
-5. **Non-root Container**: Docker container runs as non-root user
+1. **IAM Roles**: Use IAM roles for ECS tasks instead of hardcoded credentials (no AWS keys in environment)
+2. **Certificate Security**: Store mTLS certificates in S3 with encryption at rest and restricted bucket access
+3. **Temporary Files**: Certificates are stored in temporary files with read-only permissions (0o400) during runtime
+4. **Network Security**: Use private subnets with NAT gateway for ECS tasks
+5. **TLS**: All communication with vendor API uses mTLS authentication
+6. **Non-root Container**: Docker container runs as non-root user
+7. **S3 Bucket Policy**: Ensure S3 bucket blocks public access and uses encryption
 
 ## Monitoring and Logging
 
