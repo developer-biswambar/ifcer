@@ -17,19 +17,11 @@ class S3Service:
     def __init__(self):
         """Initialize S3 client with configuration."""
         try:
-            # Create S3 client with credentials from environment
-            session_kwargs = {
-                "region_name": settings.aws_region,
-            }
-
-            if settings.aws_access_key_id and settings.aws_secret_access_key:
-                session_kwargs["aws_access_key_id"] = settings.aws_access_key_id
-                session_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
-
-            self.s3_client = boto3.client("s3", **session_kwargs)
+            # Create S3 client - uses IAM role credentials automatically in ECS
+            self.s3_client = boto3.client("s3", region_name=settings.aws_region)
             self.bucket_name = settings.s3_bucket_name
 
-            logger.info(f"S3 client initialized for bucket: {self.bucket_name}")
+            logger.info(f"S3 client initialized for bucket: {self.bucket_name} in region: {settings.aws_region}")
 
         except Exception as e:
             log_exception(logger, e, "Failed to initialize S3 client")

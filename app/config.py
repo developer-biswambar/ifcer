@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     app_name: str = "IFCER Batch Service"
     log_level: str = "INFO"
 
-    # AWS S3 settings
+    # AWS settings
+    # Note: AWS credentials are automatically provided by IAM role in ECS
+    # No need to configure AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY
     aws_region: str = "eu-south-1"  # Italy region
     s3_bucket_name: str
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
 
     # AWS DynamoDB settings
     dynamodb_table_name: str = "ifcer-certifications"

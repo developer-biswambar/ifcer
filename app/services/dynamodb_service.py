@@ -18,20 +18,12 @@ class DynamoDBService:
     def __init__(self):
         """Initialize DynamoDB client with configuration."""
         try:
-            # Create DynamoDB client
-            session_kwargs = {
-                "region_name": settings.aws_region,
-            }
-
-            if settings.aws_access_key_id and settings.aws_secret_access_key:
-                session_kwargs["aws_access_key_id"] = settings.aws_access_key_id
-                session_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
-
-            self.dynamodb = boto3.resource("dynamodb", **session_kwargs)
+            # Create DynamoDB resource - uses IAM role credentials automatically in ECS
+            self.dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
             self.table_name = settings.dynamodb_table_name
             self.table = self.dynamodb.Table(self.table_name)
 
-            logger.info(f"DynamoDB service initialized for table: {self.table_name}")
+            logger.info(f"DynamoDB service initialized for table: {self.table_name} in region: {settings.aws_region}")
 
         except Exception as e:
             log_exception(logger, e, "Failed to initialize DynamoDB service")
