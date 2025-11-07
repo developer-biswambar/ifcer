@@ -174,6 +174,12 @@ class FileListRequest(BaseModel):
     signed_only: bool = Field(
         False, description="Only return files that have been signed"
     )
+    page: int = Field(
+        1, ge=1, description="Page number (starting from 1)"
+    )
+    page_size: int = Field(
+        50, ge=1, le=1000, description="Number of items per page (max 1000)"
+    )
 
     class Config:
         json_schema_extra = {
@@ -182,6 +188,8 @@ class FileListRequest(BaseModel):
                 "end_date": "2025-01-31T23:59:59Z",
                 "prefix": "documents/",
                 "signed_only": False,
+                "page": 1,
+                "page_size": 50,
             }
         }
 
@@ -189,7 +197,12 @@ class FileListRequest(BaseModel):
 class FileListResponse(BaseModel):
     """Response with list of files and their signing information."""
 
-    total_files: int = Field(..., description="Total number of files found")
-    signed_files: int = Field(..., description="Number of signed files")
-    unsigned_files: int = Field(..., description="Number of unsigned files")
-    files: List[FileSigningInfo] = Field(..., description="List of files with signing info")
+    total_files: int = Field(..., description="Total number of files matching criteria")
+    signed_files: int = Field(..., description="Total number of signed files")
+    unsigned_files: int = Field(..., description="Total number of unsigned files")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")
+    total_pages: int = Field(..., description="Total number of pages")
+    has_next: bool = Field(..., description="Whether there is a next page")
+    has_previous: bool = Field(..., description="Whether there is a previous page")
+    files: List[FileSigningInfo] = Field(..., description="List of files with signing info for current page")

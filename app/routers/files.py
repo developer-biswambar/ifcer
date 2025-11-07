@@ -99,12 +99,13 @@ async def get_files_list(request: FileListRequest):
     """
     Get list of files with signing information by date range.
 
-    This endpoint returns all files uploaded in the specified date range along with
+    This endpoint returns files uploaded in the specified date range along with
     their signing status, including:
     - Original file metadata
     - Whether file has been signed
     - Signed file location and metadata
     - Signing timestamp
+    - Pagination support for large result sets
 
     Useful for:
     - Auditing which files have been certified
@@ -112,14 +113,15 @@ async def get_files_list(request: FileListRequest):
     - Reporting on certification status
 
     Args:
-        request: FileListRequest with date range and filters
+        request: FileListRequest with date range, filters, and pagination params
 
     Returns:
-        FileListResponse with files and their signing information
+        FileListResponse with paginated files and their signing information
     """
     try:
         logger.info(
-            f"Getting files list from {request.start_date} to {request.end_date}"
+            f"Getting files list from {request.start_date} to {request.end_date} "
+            f"(page {request.page}, page_size {request.page_size})"
         )
 
         # Get all files in the date range
@@ -168,17 +170,43 @@ async def get_files_list(request: FileListRequest):
 
             file_info_list.append(file_info)
 
+        # Calculate pagination
+        total_files = len(file_info_list)
+        total_pages = (total_files + request.page_size - 1) // request.page_size  # Ceiling division
+
+        # Validate page number
+        if request.page > total_pages and total_files > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Page {request.page} exceeds total pages {total_pages}"
+            )
+
+        # Calculate slice indices for pagination
+        start_idx = (request.page - 1) * request.page_size
+        end_idx = start_idx + request.page_size
+
+        # Slice the list to get current page
+        paginated_files = file_info_list[start_idx:end_idx]
+
         logger.info(
-            f"Found {len(file_info_list)} files: {signed_count} signed, {unsigned_count} unsigned"
+            f"Found {total_files} files total: {signed_count} signed, {unsigned_count} unsigned. "
+            f"Returning page {request.page} of {total_pages} ({len(paginated_files)} items)"
         )
 
         return FileListResponse(
-            total_files=len(file_info_list),
+            total_files=total_files,
             signed_files=signed_count,
             unsigned_files=unsigned_count,
-            files=file_info_list,
+            page=request.page,
+            page_size=request.page_size,
+            total_pages=total_pages if total_files > 0 else 0,
+            has_next=request.page < total_pages,
+            has_previous=request.page > 1,
+            files=paginated_files,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         log_exception(logger, e, "Failed to get files list")
         raise HTTPException(status_code=500, detail=str(e))

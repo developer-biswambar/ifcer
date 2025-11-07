@@ -313,7 +313,7 @@ Search for files by name and get their certification status. Returns all files m
 }
 ```
 
-### Get Files List with Signing Info
+### Get Files List with Signing Info (Paginated)
 
 ```bash
 POST /files-list
@@ -323,14 +323,19 @@ Content-Type: application/json
   "start_date": "2025-01-01T00:00:00Z",
   "end_date": "2025-01-31T23:59:59Z",
   "prefix": "documents/",
-  "signed_only": false
+  "signed_only": false,
+  "page": 1,
+  "page_size": 50
 }
 ```
 
-Get all files in a date range with their certification status. Useful for:
+Get files in a date range with their certification status. Supports pagination for large result sets.
+
+**Useful for:**
 - Auditing which files have been certified
 - Finding files that need recertification
 - Generating compliance reports
+- Processing large datasets efficiently
 
 **Response:**
 ```json
@@ -338,6 +343,11 @@ Get all files in a date range with their certification status. Useful for:
   "total_files": 150,
   "signed_files": 145,
   "unsigned_files": 5,
+  "page": 1,
+  "page_size": 50,
+  "total_pages": 3,
+  "has_next": true,
+  "has_previous": false,
   "files": [
     {
       "original_file_key": "documents/2025/invoice_001.pdf",
@@ -365,8 +375,57 @@ Get all files in a date range with their certification status. Useful for:
 }
 ```
 
-**Parameters:**
-- `signed_only`: Set to `true` to only return files that have been signed
+**Request Parameters:**
+- `start_date` (required): Start date for filtering files
+- `end_date` (required): End date for filtering files
+- `prefix` (optional): S3 prefix to filter files (e.g., "documents/")
+- `signed_only` (optional, default: false): Set to `true` to only return signed files
+- `page` (optional, default: 1): Page number (starting from 1)
+- `page_size` (optional, default: 50, max: 1000): Number of items per page
+
+**Response Fields:**
+- `total_files`: Total count of files matching criteria (across all pages)
+- `signed_files`: Total count of signed files (across all pages)
+- `unsigned_files`: Total count of unsigned files (across all pages)
+- `page`: Current page number
+- `page_size`: Items per page
+- `total_pages`: Total number of pages available
+- `has_next`: Whether there is a next page available
+- `has_previous`: Whether there is a previous page available
+- `files`: Array of files for the current page
+
+**Pagination Examples:**
+
+Get first page (50 items):
+```json
+{
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-01-31T23:59:59Z",
+  "page": 1,
+  "page_size": 50
+}
+```
+
+Get second page:
+```json
+{
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-01-31T23:59:59Z",
+  "page": 2,
+  "page_size": 50
+}
+```
+
+Get all signed files with smaller page size:
+```json
+{
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-01-31T23:59:59Z",
+  "signed_only": true,
+  "page": 1,
+  "page_size": 100
+}
+```
 
 ---
 
