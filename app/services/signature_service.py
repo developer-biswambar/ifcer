@@ -327,10 +327,10 @@ class SignatureService:
             cert = asn1_x509.Certificate.load(cert_der_bytes)
 
             # Create ContentInfo for the manifest (encapContentInfo)
-            content_type = cms.ContentType('data')
+            # For PKCS#7 SignedData, content is wrapped in OctetString when type is 'data'
             encap_content_info = cms.ContentInfo({
-                'content_type': content_type,
-                'content': core.PrimitiveBitString(manifest_content)
+                'content_type': cms.ContentType('data'),
+                'content': core.OctetString(manifest_content)
             })
 
             # Get certificate hash for signer identifier
