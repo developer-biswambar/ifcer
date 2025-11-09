@@ -1,18 +1,24 @@
 """Signature service for InfoCert API integration with mTLS authentication.
 
-This service integrates with InfoCert's Multiple Automatic Hash Signature API
-to obtain qualified digital signatures for documents. The workflow:
+This service implements a MANIFEST-BASED approach for qualified digital signatures,
+compliant with Italian eIDAS and AgID standards. The workflow:
 
-1. Compute SHA-256 hash of the document
-2. Send hash to InfoCert API with mTLS authentication
-3. InfoCert signs the hash using qualified certificates
-4. InfoCert returns a CAdES-BES/CAdES-BASELINE-B signature (P7M format)
-5. P7M file is stored for Italian register submission
+1. Compute SHA-256 hash of the original document
+2. Create a manifest JSON file containing: fileName, hash, algorithm, timestamp
+3. Base64 encode the manifest
+4. Send manifest to InfoCert Sign API with mTLS authentication
+5. InfoCert signs the manifest using qualified certificates
+6. InfoCert returns a CAdES-BES/CAdES-BASELINE-B signature (P7M of manifest)
+7. Store original file + signed manifest P7M for Italian register submission
+
+The P7M file contains the SIGNED MANIFEST (not the original file).
+The manifest's hash field proves the integrity of the original file.
 
 Reference: https://developers.infocert.digital/e-signature-and-e-sealing/
 """
 
 import base64
+import json
 import requests
 from requests.exceptions import RequestException, Timeout, SSLError
 from typing import Optional
@@ -148,13 +154,22 @@ class SignatureService:
 
     def sign_file_hash(self, signature_request: SignatureRequest) -> SignatureResponse:
         """
-        Send file hash to vendor API for digital signature and timestamp.
+        Create and sign a manifest file containing the file hash using InfoCert API.
+
+        This implements the manifest-based approach where:
+        1. Create a manifest JSON containing file hash and metadata
+        2. Base64 encode the manifest
+        3. Send manifest to InfoCert for CAdES signing
+        4. Receive signed P7M of the manifest (not the original file)
+
+        The original file stays unchanged. The P7M contains the signed manifest,
+        which proves the integrity of the original file through its hash.
 
         Args:
             signature_request: SignatureRequest object with file hash details
 
         Returns:
-            SignatureResponse with signature and timestamp
+            SignatureResponse with signed manifest (P7M) and timestamp
 
         Raises:
             RequestException: If API request fails
@@ -163,32 +178,47 @@ class SignatureService:
         """
         try:
             logger.info(
-                f"Requesting signature for file: {signature_request.filename}"
+                f"Creating and signing manifest for file: {signature_request.filename}"
             )
             logger.debug(
                 f"Hash: {signature_request.file_hash[:16]}... Algorithm: {signature_request.hash_algorithm}"
             )
 
-            # Create session with mTLS
-            session = self._create_session()
-
-            # Prepare request payload for InfoCert Hash Signature API
-            # Based on InfoCert's Multiple Automatic Hash Signature workflow
-            payload = {
-                "hashAlgorithmOID": self._get_hash_algorithm_oid(signature_request.hash_algorithm),
+            # Step 1: Create manifest JSON
+            manifest = {
+                "fileName": signature_request.filename,
+                "algorithm": signature_request.hash_algorithm.upper(),
                 "hash": signature_request.file_hash,
-                "signatureLevel": "CAdES_BASELINE_B",  # CAdES-BES for P7M format
-                "signaturePackaging": "ENVELOPING",  # Standard for P7M
-                "digestAlgorithm": signature_request.hash_algorithm.upper(),
+                "timestamp": datetime.utcnow().isoformat() + "Z"
             }
 
-            # Add optional filename/description
-            if signature_request.filename:
-                payload["description"] = signature_request.filename
+            # Convert manifest to JSON string
+            manifest_json = json.dumps(manifest, indent=2)
+            logger.debug(f"Created manifest: {manifest_json}")
+
+            # Step 2: Base64 encode the manifest
+            manifest_b64 = base64.b64encode(manifest_json.encode('utf-8')).decode('ascii')
+
+            # Step 3: Create session with mTLS
+            session = self._create_session()
+
+            # Step 4: Prepare request payload for InfoCert Sign API
+            # We're signing the MANIFEST, not just the hash
+            payload = {
+                "credentialID": settings.infocert_credential_id,
+                "signRequest": {
+                    "signFormat": "CAdES",  # CAdES format for P7M
+                    "signatureLevel": "CAdES_BASELINE_B",  # CAdES-BES
+                    "inputDocuments": [{
+                        "contentType": "BASE64",
+                        "content": manifest_b64
+                    }]
+                }
+            }
 
             # Make API request to InfoCert Sign API
             response = session.post(
-                f"{self.api_url}/sign/hash",  # InfoCert hash signature endpoint
+                f"{self.api_url}/sign/v2",  # InfoCert sign endpoint
                 json=payload,
                 timeout=self.timeout,
             )
@@ -199,11 +229,17 @@ class SignatureService:
             # Parse InfoCert response
             response_data = response.json()
 
-            # InfoCert typically returns the signature in base64 encoded CAdES format
+            # InfoCert returns the signed document (P7M of manifest) in base64
+            signed_manifest_b64 = response_data.get("signedDocuments", [{}])[0].get("content")
+            signing_time = response_data.get("signingTime", datetime.utcnow().isoformat())
+
+            if not signed_manifest_b64:
+                raise ValueError("InfoCert API did not return signed document")
+
             signature_response = SignatureResponse(
-                signature=response_data.get("signatureValue"),
-                timestamp=datetime.fromisoformat(response_data.get("signingTime", datetime.utcnow().isoformat())),
-                p7m_content=response_data.get("signedDocument"),  # Base64 encoded P7M file
+                signature=response_data.get("signatureValue", ""),
+                timestamp=datetime.fromisoformat(signing_time.replace("Z", "+00:00")),
+                p7m_content=signed_manifest_b64,  # Base64 encoded P7M of manifest
             )
 
             logger.info(
@@ -246,28 +282,33 @@ class SignatureService:
         self, original_content: bytes, signature: str, timestamp: datetime
     ) -> bytes:
         """
-        Create P7M (PKCS#7/CAdES) file for Italian register submission.
+        Decode and return the signed manifest P7M file from InfoCert.
 
-        InfoCert's hash signature API returns the complete P7M file (signedDocument)
-        in base64-encoded format. This function decodes and returns it.
+        Manifest-based approach for Italian register submission:
+        - The P7M contains a signed MANIFEST (not the original file)
+        - The manifest is a JSON file containing: fileName, hash, algorithm, timestamp
+        - The original file remains unchanged in S3
+        - The P7M proves the integrity of the original file through its hash
 
-        The P7M file is in CAdES (Cryptographic Message Syntax Advanced Electronic Signatures)
-        format, which is the standard for Italian digital signatures and complies with
-        eIDAS regulations.
+        This approach is compliant with eIDAS regulations and AgID standards.
 
         Workflow:
-        1. InfoCert API receives the document hash
-        2. InfoCert signs the hash using the qualified certificate
+        1. Create manifest JSON with file metadata and hash
+        2. InfoCert signs the manifest using qualified certificate
         3. InfoCert creates a CAdES-BES/CAdES-BASELINE-B signature container
-        4. InfoCert returns the complete P7M file (PKCS#7 enveloping signature)
+        4. InfoCert returns the complete P7M of the manifest
+
+        Storage structure:
+        - Original file: s3://bucket/documents/file.pdf
+        - Signed manifest: s3://bucket/signed/file.pdf.p7m (contains signed manifest)
 
         Args:
-            original_content: Original file content (not used - InfoCert wraps it internally)
-            signature: Base64-encoded P7M content from InfoCert API (signedDocument field)
+            original_content: Original file content (not used in manifest-based approach)
+            signature: Base64-encoded P7M content from InfoCert API (signed manifest)
             timestamp: Signing timestamp from InfoCert (for logging/metadata)
 
         Returns:
-            P7M file content as bytes (decoded from base64)
+            P7M file content as bytes (decoded from base64) - signed manifest
 
         Raises:
             ValueError: If signature content is invalid or empty

@@ -1,17 +1,20 @@
 # IFCER - Italian File Certification and Registration Batch Service
 
-A Python-based batch service for processing files from AWS S3, computing cryptographic hashes, obtaining qualified digital signatures via **InfoCert's API** using mTLS authentication, and creating P7M (CAdES) files for Italian register submission compliant with eIDAS regulations.
+A Python-based batch service for processing files from AWS S3, computing cryptographic hashes, and obtaining qualified digital signatures via **InfoCert's API** using a **manifest-based approach** with mTLS authentication. Creates P7M (CAdES) signed manifests for Italian register submission, fully compliant with eIDAS and AgID regulations.
 
 ## Overview
 
-This service is designed to run as an AWS ECS task triggered by EventBridge. It performs the following operations:
+This service is designed to run as an AWS ECS task triggered by EventBridge. It implements a **manifest-based signing approach** where:
 
 1. Fetches files from an S3 bucket based on a date range (upload date)
 2. Computes SHA-256 hash for each file
-3. Sends file hashes to InfoCert's Sign API using mTLS authentication
-4. Receives CAdES-BES digital signatures (P7M files) from InfoCert
-5. Stores signed P7M files in S3 for Italian register submission
-6. Maintains certification metadata in DynamoDB for audit trail
+3. Creates a manifest JSON containing file metadata and hash
+4. Sends the manifest to InfoCert's Sign API using mTLS authentication
+5. Receives CAdES-BES digital signatures (P7M of the manifest) from InfoCert
+6. Stores original files + signed manifest P7M in S3 for Italian register submission
+7. Maintains certification metadata in DynamoDB for audit trail
+
+**Key Point**: The original file stays unchanged. The P7M contains a **signed manifest** that proves the file's integrity through its hash.
 
 ## Architecture
 
@@ -78,9 +81,10 @@ S3_BUCKET_NAME=your-bucket-name
 DYNAMODB_TABLE_NAME=ifcer-certifications
 
 # InfoCert API Configuration (mTLS)
-# InfoCert's Multiple Automatic Hash Signature API
+# InfoCert's Manifest-Based Hash Signature API
 # Certificates are stored in S3 and loaded during application startup
 VENDOR_API_URL=https://sign.infocert.it/api/v1
+INFOCERT_CREDENTIAL_ID=your-infocert-credential-id
 VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
 VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
 VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
@@ -816,63 +820,142 @@ The service includes comprehensive error handling and logging:
 - [ ] Dead letter queue for failed files
 - [ ] Notification service for processing completion
 
-## InfoCert API Integration
+## InfoCert API Integration (Manifest-Based Approach)
 
-This service is configured to work with **InfoCert's Multiple Automatic Hash Signature API** for obtaining qualified digital signatures compliant with eIDAS regulations.
+This service implements a **manifest-based approach** using InfoCert's Sign API for obtaining qualified digital signatures compliant with Italian eIDAS and AgID regulations.
+
+### Why Manifest-Based?
+
+Since only the **hash** of the file is sent to InfoCert (not the full file), we cannot create an enveloping P7M that contains the original document. Instead:
+
+- **Original file** stays unchanged in S3
+- **Manifest file** (JSON) is created containing the file's hash and metadata
+- **InfoCert signs the manifest** and returns a P7M of the signed manifest
+- The P7M proves the integrity of the original file through the hash in the manifest
+
+This approach is **tamper-evident** and **legally compliant** for Italian digital signatures.
 
 ### API Workflow
 
-The service follows InfoCert's hash signature workflow:
+1. **Hash Computation**: Compute SHA-256 hash of the original document locally
+   ```
+   Hash: f2a7c53b8c9b80f47993e2c1bb0af2d7b73f92df3b7f1234567890abcdef
+   ```
 
-1. **Hash Computation**: Compute SHA-256 hash of the document locally
-2. **API Request**: Send hash to InfoCert Sign API (`/sign/hash` endpoint) with:
-   - `hashAlgorithmOID`: OID of the hash algorithm (e.g., `2.16.840.1.101.3.4.2.1` for SHA-256)
-   - `hash`: The computed document hash
-   - `signatureLevel`: `CAdES_BASELINE_B` for P7M format
-   - `signaturePackaging`: `ENVELOPING` for standard P7M
-   - `digestAlgorithm`: Hash algorithm name (e.g., `SHA256`)
-3. **API Response**: InfoCert returns:
-   - `signedDocument`: Base64-encoded P7M file (CAdES format)
-   - `signatureValue`: The digital signature value
-   - `signingTime`: Timestamp of signature creation
-4. **P7M Storage**: Decode and store the P7M file in S3 `signed/` folder
+2. **Manifest Creation**: Create a JSON manifest file:
+   ```json
+   {
+     "fileName": "trade_declaration.xml",
+     "algorithm": "SHA256",
+     "hash": "f2a7c53b8c9b80f47993e2c1bb0af2d7b73f92df3b7f1234567890abcdef",
+     "timestamp": "2025-11-09T10:25:00Z"
+   }
+   ```
+
+3. **Base64 Encoding**: Encode the manifest to Base64
+
+4. **API Request**: Send manifest to InfoCert Sign API (`/sign/v2` endpoint):
+   ```json
+   {
+     "credentialID": "your-credential-id",
+     "signRequest": {
+       "signFormat": "CAdES",
+       "signatureLevel": "CAdES_BASELINE_B",
+       "inputDocuments": [{
+         "contentType": "BASE64",
+         "content": "<base64-encoded-manifest>"
+       }]
+     }
+   }
+   ```
+
+5. **API Response**: InfoCert returns:
+   ```json
+   {
+     "signedDocuments": [{
+       "content": "<base64-p7m-of-manifest>"
+     }],
+     "signatureValue": "...",
+     "signingTime": "2025-11-09T10:25:05Z"
+   }
+   ```
+
+6. **P7M Storage**: Decode and store the signed manifest P7M in S3 `signed/` folder
+
+### File Storage Structure
+
+After processing, you have two files:
+
+```
+s3://your-bucket/
+├── documents/
+│   └── trade_declaration.xml          ← Original file (unchanged)
+└── signed/
+    └── trade_declaration.xml.p7m      ← Signed manifest (P7M)
+```
+
+The `.p7m` file contains the **signed manifest**, which includes:
+- Original file name
+- SHA-256 hash of the original file
+- Hash algorithm used
+- Timestamp of manifest creation
+
+### Integrity Verification
+
+To verify the file hasn't been tampered with:
+
+1. Extract the hash from the signed manifest P7M
+2. Compute the hash of the original file
+3. Compare both hashes - if they match, file is authentic
 
 ### Configuration
 
-Set the InfoCert API base URL in your environment:
+Required environment variables:
 
 ```bash
 VENDOR_API_URL=https://sign.infocert.it/api/v1
+INFOCERT_CREDENTIAL_ID=your-infocert-credential-id
+VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 ```
 
 The service automatically:
 - Loads mTLS certificates from S3 during startup
-- Converts hash algorithms to OIDs
+- Creates manifest JSON from file metadata and hash
 - Handles base64 encoding/decoding
 - Validates P7M file structure (PKCS#7 format)
 
 ### Supported Hash Algorithms
 
-The service supports the following hash algorithms with their OIDs:
-- **SHA-256** (recommended): `2.16.840.1.101.3.4.2.1`
-- **SHA-512**: `2.16.840.1.101.3.4.2.3`
-- **SHA-384**: `2.16.840.1.101.3.4.2.2`
-- **SHA-224**: `2.16.840.1.101.3.4.2.4`
-- **SHA-1** (deprecated): `1.3.14.3.2.26`
+- **SHA-256** (recommended and default)
+- **SHA-512**
+- **SHA-384**
+- **SHA-224**
+- **SHA-1** (deprecated, avoid using)
 
 ### CAdES Format
 
 InfoCert returns signatures in **CAdES-BES/CAdES-BASELINE-B** format, which:
 - Complies with ETSI TS 119 122-1 specification
-- Is the standard for Italian digital signatures
-- Creates P7M files (PKCS#7 enveloping signature)
-- Includes the signer's certificate in the signature container
+- Is the standard for Italian qualified digital signatures
+- Creates P7M files (PKCS#7 enveloping signature of the manifest)
+- Includes the signer's qualified certificate in the signature container
+- Is legally binding under eIDAS regulations
+
+### Compliance
+
+This manifest-based approach is fully compliant with:
+- **eIDAS** (Electronic Identification, Authentication and Trust Services)
+- **AgID** (Agenzia per l'Italia Digitale) standards
+- **ETSI TS 119 122-1** (CAdES baseline profile)
+- Italian regulations for digital document preservation
 
 ### Documentation
 
 For more details, refer to:
 - InfoCert Developers Portal: https://developers.infocert.digital/
-- Multiple Automatic Hash Signature: https://developers.infocert.digital/e-signature-and-e-sealing/use-cases/multiple-automatic-hash-signature/
+- Sign API Documentation: https://developers.infocert.digital/e-signature-and-e-sealing/sign-api/
 
 ## License
 

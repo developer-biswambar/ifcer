@@ -22,11 +22,12 @@ class Settings(BaseSettings):
     dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
 
     # InfoCert API settings (mTLS)
-    # InfoCert's Multiple Automatic Hash Signature API
+    # InfoCert's Manifest-Based Hash Signature API
     # Certificates are stored in S3 and loaded during application startup
     # API URL should point to InfoCert's Sign API base URL
     # Example: https://sign.infocert.it/api/v1
     vendor_api_url: str
+    infocert_credential_id: str  # InfoCert credential ID for signing
     vendor_mtls_cert_s3_key: str = "certs/client_cert.pem"
     vendor_mtls_key_s3_key: str = "certs/client_key.pem"
     vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
