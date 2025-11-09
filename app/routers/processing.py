@@ -227,9 +227,9 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         if sig_response.p7m_content:
             p7m_content = sig_response.p7m_content
         else:
-            # TODO: Implement P7M creation if vendor doesn't provide it
+            # P7M creation is now handled by SignatureService
             logger.warning(
-                f"P7M content not provided by vendor for {file_key}, skipping P7M upload"
+                f"P7M content not available for {file_key}, skipping P7M upload"
             )
             p7m_content = None
 

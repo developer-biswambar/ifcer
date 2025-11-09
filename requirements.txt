@@ -16,7 +16,6 @@ requests==2.31.0
 python-dateutil==2.8.2
 python-multipart==0.0.6
 
-# Optional: For enhanced cryptography operations
-# Uncomment if needed for P7M file creation
-# cryptography==41.0.7
-# pyOpenSSL==23.3.0
+# Cryptography for P7M/PKCS#7/CAdES file creation
+cryptography==42.0.5
+asn1crypto==1.5.1

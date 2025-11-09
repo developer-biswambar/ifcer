@@ -26,6 +26,9 @@ from datetime import datetime, timezone
 import tempfile
 import os
 import boto3
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from asn1crypto import cms, core, algos, x509 as asn1_x509
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
 from app.utils.logger import setup_logger, log_exception
@@ -229,17 +232,36 @@ class SignatureService:
             # Parse InfoCert response
             response_data = response.json()
 
-            # InfoCert returns the signed document (P7M of manifest) in base64
-            signed_manifest_b64 = response_data.get("signedDocuments", [{}])[0].get("content")
+            # InfoCert returns signature and certificate (not complete P7M)
+            # We need to create the P7M ourselves
+            signature_value_b64 = response_data.get("signatureValue", "")
+            signing_cert_b64 = response_data.get("signingCertificate", "")
             signing_time = response_data.get("signingTime", datetime.now(timezone.utc).isoformat())
 
-            if not signed_manifest_b64:
-                raise ValueError("InfoCert API did not return signed document")
+            if not signature_value_b64:
+                raise ValueError("InfoCert API did not return signature value")
+
+            if not signing_cert_b64:
+                raise ValueError("InfoCert API did not return signing certificate")
+
+            # Decode signature and certificate
+            signature_bytes = base64.b64decode(signature_value_b64)
+            cert_bytes = base64.b64decode(signing_cert_b64)
+
+            # Create P7M file from manifest, signature, and certificate
+            p7m_bytes = self._create_p7m_from_signature(
+                manifest_json.encode('utf-8'),
+                signature_bytes,
+                cert_bytes
+            )
+
+            # Encode P7M to base64 for consistent handling
+            p7m_content_b64 = base64.b64encode(p7m_bytes).decode('ascii')
 
             signature_response = SignatureResponse(
-                signature=response_data.get("signatureValue", ""),
+                signature=signature_value_b64,
                 timestamp=datetime.fromisoformat(signing_time.replace("Z", "+00:00")),
-                p7m_content=signed_manifest_b64,  # Base64 encoded P7M of manifest
+                p7m_content=p7m_content_b64,  # Base64 encoded P7M we created
             )
 
             logger.info(
@@ -278,11 +300,103 @@ class SignatureService:
             )
             raise
 
+    def _create_p7m_from_signature(
+        self, manifest_content: bytes, signature_bytes: bytes, cert_der_bytes: bytes
+    ) -> bytes:
+        """
+        Create a P7M (PKCS#7/CAdES) file from manifest content, signature, and certificate.
+
+        This creates a CAdES-BES (Basic Electronic Signature) structure which is
+        a PKCS#7 SignedData containing the signed manifest.
+
+        Args:
+            manifest_content: The manifest JSON as bytes
+            signature_bytes: The signature bytes from InfoCert
+            cert_der_bytes: The DER-encoded signing certificate from InfoCert
+
+        Returns:
+            Complete P7M file as bytes (DER-encoded PKCS#7 SignedData)
+
+        Raises:
+            ValueError: If P7M creation fails
+        """
+        try:
+            logger.debug("Creating P7M/CAdES structure from signature")
+
+            # Parse the certificate
+            cert = asn1_x509.Certificate.load(cert_der_bytes)
+
+            # Create ContentInfo for the manifest (encapContentInfo)
+            content_type = cms.ContentType('data')
+            encap_content_info = cms.ContentInfo({
+                'content_type': content_type,
+                'content': core.PrimitiveBitString(manifest_content)
+            })
+
+            # Get certificate hash for signer identifier
+            # For CAdES, we use IssuerAndSerialNumber
+            issuer = cert['tbs_certificate']['issuer']
+            serial_number = cert['tbs_certificate']['serial_number']
+
+            signer_identifier = cms.SignerIdentifier(
+                name='issuer_and_serial_number',
+                value=cms.IssuerAndSerialNumber({
+                    'issuer': issuer,
+                    'serial_number': serial_number
+                })
+            )
+
+            # SHA-256 digest algorithm (used for hashing the manifest)
+            digest_algorithm = algos.DigestAlgorithm({
+                'algorithm': '2.16.840.1.101.3.4.2.1'  # SHA-256 OID
+            })
+
+            # RSA with SHA-256 signature algorithm (typical for InfoCert)
+            signature_algorithm = algos.SignedDigestAlgorithm({
+                'algorithm': '1.2.840.113549.1.1.11'  # sha256WithRSAEncryption OID
+            })
+
+            # Create SignerInfo
+            signer_info = cms.SignerInfo({
+                'version': 'v1',
+                'sid': signer_identifier,
+                'digest_algorithm': digest_algorithm,
+                'signature_algorithm': signature_algorithm,
+                'signature': core.OctetString(signature_bytes)
+            })
+
+            # Create SignedData
+            signed_data = cms.SignedData({
+                'version': 'v1',
+                'digest_algorithms': cms.DigestAlgorithms([digest_algorithm]),
+                'encap_content_info': encap_content_info,
+                'certificates': cms.CertificateSet([
+                    cms.CertificateChoices(name='certificate', value=cert)
+                ]),
+                'signer_infos': cms.SignerInfos([signer_info])
+            })
+
+            # Wrap in ContentInfo
+            content_info = cms.ContentInfo({
+                'content_type': cms.ContentType('signed_data'),
+                'content': signed_data
+            })
+
+            # Encode to DER (this is the P7M file)
+            p7m_bytes = content_info.dump()
+
+            logger.info(f"Successfully created P7M file: {len(p7m_bytes)} bytes")
+            return p7m_bytes
+
+        except Exception as e:
+            log_exception(logger, e, "Failed to create P7M file from signature")
+            raise ValueError(f"P7M creation failed: {str(e)}")
+
     def create_p7m_file(
         self, original_content: bytes, signature: str, timestamp: datetime
     ) -> bytes:
         """
-        Decode and return the signed manifest P7M file from InfoCert.
+        Decode and return the P7M file we created from InfoCert's signature.
 
         Manifest-based approach for Italian register submission:
         - The P7M contains a signed MANIFEST (not the original file)
@@ -294,9 +408,10 @@ class SignatureService:
 
         Workflow:
         1. Create manifest JSON with file metadata and hash
-        2. InfoCert signs the manifest using qualified certificate
-        3. InfoCert creates a CAdES-BES/CAdES-BASELINE-B signature container
-        4. InfoCert returns the complete P7M of the manifest
+        2. Send manifest to InfoCert for signing
+        3. InfoCert returns signature and certificate
+        4. We create CAdES-BES/CAdES-BASELINE-B P7M structure using asn1crypto
+        5. P7M contains: manifest + signature + signer certificate
 
         Storage structure:
         - Original file: s3://bucket/documents/file.pdf
@@ -304,7 +419,7 @@ class SignatureService:
 
         Args:
             original_content: Original file content (not used in manifest-based approach)
-            signature: Base64-encoded P7M content from InfoCert API (signed manifest)
+            signature: Base64-encoded P7M content we created from InfoCert's signature
             timestamp: Signing timestamp from InfoCert (for logging/metadata)
 
         Returns:
@@ -315,14 +430,14 @@ class SignatureService:
         """
         if not signature:
             logger.error("Cannot create P7M file: signature content is empty")
-            raise ValueError("Signature content (signedDocument) is required from InfoCert API")
+            raise ValueError("P7M content is required")
 
         try:
-            # Decode base64-encoded P7M content from InfoCert
+            # Decode base64-encoded P7M content that we created
             p7m_content = base64.b64decode(signature)
 
             logger.info(
-                f"Successfully created P7M file: {len(p7m_content)} bytes, "
+                f"Successfully decoded P7M file: {len(p7m_content)} bytes, "
                 f"signed at {timestamp.isoformat()}"
             )
 
@@ -333,8 +448,8 @@ class SignatureService:
             return p7m_content
 
         except Exception as e:
-            log_exception(logger, e, "Failed to decode P7M content from InfoCert response")
-            raise ValueError(f"Invalid P7M content from InfoCert API: {str(e)}")
+            log_exception(logger, e, "Failed to decode P7M content")
+            raise ValueError(f"Invalid P7M content: {str(e)}")
 
     def health_check(self) -> bool:
         """

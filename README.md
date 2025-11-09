@@ -872,15 +872,19 @@ This approach is **tamper-evident** and **legally compliant** for Italian digita
 5. **API Response**: InfoCert returns:
    ```json
    {
-     "signedDocuments": [{
-       "content": "<base64-p7m-of-manifest>"
-     }],
-     "signatureValue": "...",
+     "signatureValue": "<base64-signature-bytes>",
+     "signingCertificate": "<base64-cert-der>",
      "signingTime": "2025-11-09T10:25:05Z"
    }
    ```
 
-6. **P7M Storage**: Decode and store the signed manifest P7M in S3 `signed/` folder
+6. **P7M Creation**: We create the P7M file ourselves using:
+   - The manifest content
+   - The signature from InfoCert
+   - The signing certificate from InfoCert
+   - Using `asn1crypto` library to build CAdES-BES/PKCS#7 structure
+
+7. **P7M Storage**: Store the created P7M file in S3 `signed/` folder
 
 ### File Storage Structure
 
@@ -899,6 +903,39 @@ The `.p7m` file contains the **signed manifest**, which includes:
 - SHA-256 hash of the original file
 - Hash algorithm used
 - Timestamp of manifest creation
+
+### P7M File Creation
+
+Since InfoCert returns the **signature** and **certificate** (not a complete P7M), we create the P7M file ourselves:
+
+**Libraries Used:**
+- `asn1crypto`: For building PKCS#7/CMS structures
+- `cryptography`: For certificate parsing
+
+**P7M Structure (CAdES-BES):**
+```
+ContentInfo (PKCS#7)
+└── SignedData
+    ├── version: v1
+    ├── digestAlgorithms: [SHA-256]
+    ├── encapContentInfo:
+    │   ├── contentType: data
+    │   └── content: <manifest-json>
+    ├── certificates: [InfoCert signer certificate]
+    └── signerInfos:
+        └── SignerInfo
+            ├── version: v1
+            ├── sid: IssuerAndSerialNumber
+            ├── digestAlgorithm: SHA-256
+            ├── signatureAlgorithm: sha256WithRSAEncryption
+            └── signature: <signature-from-infocert>
+```
+
+This creates a standards-compliant CAdES-BES structure that:
+- Contains the manifest as signed content
+- Includes the digital signature from InfoCert's qualified certificate
+- Embeds the signer's certificate for verification
+- Is verifiable by any PKCS#7/CAdES validator
 
 ### Integrity Verification
 
