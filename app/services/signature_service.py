@@ -255,13 +255,10 @@ class SignatureService:
                 cert_bytes
             )
 
-            # Encode P7M to base64 for consistent handling
-            p7m_content_b64 = base64.b64encode(p7m_bytes).decode('ascii')
-
             signature_response = SignatureResponse(
                 signature=signature_value_b64,
                 timestamp=datetime.fromisoformat(signing_time.replace("Z", "+00:00")),
-                p7m_content=p7m_content_b64,  # Base64 encoded P7M we created
+                p7m_content=p7m_bytes,  # Raw P7M bytes (DER-encoded PKCS#7)
             )
 
             logger.info(
