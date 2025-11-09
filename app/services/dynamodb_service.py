@@ -2,7 +2,7 @@
 
 import boto3
 from botocore.exceptions import ClientError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
 
@@ -63,7 +63,7 @@ class DynamoDBService:
             True if successful
         """
         try:
-            processing_timestamp = datetime.utcnow().isoformat()
+            processing_timestamp = datetime.now(timezone.utc).isoformat()
 
             # Extract filename for GSI
             filename = file_key.split("/")[-1]
@@ -94,7 +94,7 @@ class DynamoDBService:
 
             # Add TTL if configured
             if settings.dynamodb_ttl_days:
-                ttl = datetime.utcnow() + timedelta(days=settings.dynamodb_ttl_days)
+                ttl = datetime.now(timezone.utc) + timedelta(days=settings.dynamodb_ttl_days)
                 item["ttl"] = int(ttl.timestamp())
 
             self.table.put_item(Item=item)

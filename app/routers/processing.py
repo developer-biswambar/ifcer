@@ -1,7 +1,7 @@
 """Processing endpoints for file certification."""
 
 from fastapi import APIRouter, HTTPException
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 import os
 
@@ -55,7 +55,7 @@ async def health_check():
 
         return HealthCheckResponse(
             status="healthy",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             version=__version__,
         )
 
@@ -123,7 +123,7 @@ async def process_files(request: DateRangeRequest):
     Returns:
         BatchProcessingResponse with processing results
     """
-    processing_start = datetime.utcnow()
+    processing_start = datetime.now(timezone.utc)
     results: List[FileProcessingResult] = []
 
     try:
@@ -142,7 +142,7 @@ async def process_files(request: DateRangeRequest):
         logger.info(f"Found {total_files} files to process")
 
         if total_files == 0:
-            processing_end = datetime.utcnow()
+            processing_end = datetime.now(timezone.utc)
             duration = (processing_end - processing_start).total_seconds()
 
             return BatchProcessingResponse(
@@ -169,7 +169,7 @@ async def process_files(request: DateRangeRequest):
             [r for r in results if r.status == ProcessingStatus.FAILED]
         )
 
-        processing_end = datetime.utcnow()
+        processing_end = datetime.now(timezone.utc)
         duration = (processing_end - processing_start).total_seconds()
 
         logger.info(
@@ -293,7 +293,7 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
                 file_hash="",  # Not available on failure
                 hash_algorithm=hash_service.algorithm,
                 digital_signature="",  # Not available on failure
-                vendor_timestamp=datetime.utcnow(),  # Use current time
+                vendor_timestamp=datetime.now(timezone.utc),  # Use current time
                 signed_file_key="",  # Not available on failure
                 file_size=file_size,
                 signed_file_size=0,

@@ -22,7 +22,7 @@ import json
 import requests
 from requests.exceptions import RequestException, Timeout, SSLError
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import tempfile
 import os
 import boto3
@@ -189,7 +189,7 @@ class SignatureService:
                 "fileName": signature_request.filename,
                 "algorithm": signature_request.hash_algorithm.upper(),
                 "hash": signature_request.file_hash,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
 
             # Convert manifest to JSON string
@@ -231,7 +231,7 @@ class SignatureService:
 
             # InfoCert returns the signed document (P7M of manifest) in base64
             signed_manifest_b64 = response_data.get("signedDocuments", [{}])[0].get("content")
-            signing_time = response_data.get("signingTime", datetime.utcnow().isoformat())
+            signing_time = response_data.get("signingTime", datetime.now(timezone.utc).isoformat())
 
             if not signed_manifest_b64:
                 raise ValueError("InfoCert API did not return signed document")
