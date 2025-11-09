@@ -38,20 +38,29 @@ async def health_check():
     Health check endpoint.
     Verifies connectivity to S3 and vendor API.
     """
+    start_time = datetime.now(timezone.utc)
     try:
-        logger.info("Performing health check")
+        logger.info("[HEALTH CHECK] Starting health check")
 
         # Check S3 access
+        logger.debug("[HEALTH CHECK] Checking S3 bucket access...")
         s3_accessible = s3_service.check_bucket_access()
+        logger.info(f"[HEALTH CHECK] S3 bucket access: {'✓ OK' if s3_accessible else '✗ FAILED'}")
 
         # Check vendor API access
+        logger.debug("[HEALTH CHECK] Checking vendor API access...")
         vendor_accessible = signature_service.health_check()
+        logger.info(f"[HEALTH CHECK] Vendor API access: {'✓ OK' if vendor_accessible else '✗ FAILED'}")
 
         if not s3_accessible or not vendor_accessible:
+            logger.error("[HEALTH CHECK] ✗ Health check FAILED - service dependencies not accessible")
             raise HTTPException(
                 status_code=503,
                 detail="Service dependencies are not accessible",
             )
+
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(f"[HEALTH CHECK] ✓ Health check PASSED | Duration: {elapsed:.2f}s")
 
         return HealthCheckResponse(
             status="healthy",
@@ -60,7 +69,8 @@ async def health_check():
         )
 
     except Exception as e:
-        log_exception(logger, e, "Health check failed")
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        log_exception(logger, e, f"[HEALTH CHECK] Health check failed after {elapsed:.2f}s")
         raise HTTPException(status_code=503, detail=str(e))
 
 
@@ -94,17 +104,29 @@ async def recertify_single_file(request: SingleFileRequest):
     Raises:
         HTTPException: If processing fails at any step (fail-fast behavior)
     """
+    start_time = datetime.now(timezone.utc)
     try:
-        logger.info(f"Recertifying single file: {request.file_key}")
+        logger.info(f"[RECERTIFY] Starting recertification | File: {request.file_key}")
 
         # Process the single file - will raise exception if anything fails
         result = await process_single_file(request.file_key)
 
-        logger.info(f"Successfully recertified file: {request.file_key}")
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(
+            f"[RECERTIFY] ✓ Recertification complete | "
+            f"File: {request.file_key} | "
+            f"Duration: {elapsed:.2f}s | "
+            f"P7M: {result.p7m_file_key}"
+        )
         return result
 
     except Exception as e:
-        log_exception(logger, e, f"Recertification failed for: {request.file_key}")
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        log_exception(
+            logger,
+            e,
+            f"[RECERTIFY] ✗ Recertification failed | File: {request.file_key} | Duration: {elapsed:.2f}s"
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -139,10 +161,13 @@ async def process_files(request: DateRangeRequest):
 
     try:
         logger.info(
-            f"Starting batch processing from {request.start_date} to {request.end_date}"
+            f"[BATCH START] Starting batch processing | "
+            f"Date range: {request.start_date.isoformat()} to {request.end_date.isoformat()} | "
+            f"Prefix: {request.prefix or 'None'}"
         )
 
         # Step 1: List files from S3 by date range
+        logger.debug("[BATCH STEP 1/2] Listing files from S3...")
         files = s3_service.list_files_by_date_range(
             start_date=request.start_date,
             end_date=request.end_date,
@@ -150,11 +175,12 @@ async def process_files(request: DateRangeRequest):
         )
 
         total_files = len(files)
-        logger.info(f"Found {total_files} files to process")
+        logger.info(f"[BATCH STEP 1/2] Found {total_files} files to process")
 
         if total_files == 0:
             processing_end = datetime.now(timezone.utc)
             duration = (processing_end - processing_start).total_seconds()
+            logger.info(f"[BATCH COMPLETE] No files to process | Duration: {duration:.2f}s")
 
             return BatchProcessingResponse(
                 total_files=0,
@@ -168,9 +194,18 @@ async def process_files(request: DateRangeRequest):
             )
 
         # Step 2: Process each file
-        for file_metadata in files:
+        logger.info(f"[BATCH STEP 2/2] Processing {total_files} files...")
+        for index, file_metadata in enumerate(files, 1):
+            logger.info(
+                f"[BATCH PROGRESS] Processing file {index}/{total_files} ({(index/total_files*100):.1f}%) | "
+                f"File: {file_metadata.key}"
+            )
             result = await process_single_file(file_metadata.key)
             results.append(result)
+            logger.debug(
+                f"[BATCH PROGRESS] File {index}/{total_files} completed | "
+                f"Status: {result.status.value}"
+            )
 
         # Calculate statistics
         successful_files = len(
@@ -182,9 +217,15 @@ async def process_files(request: DateRangeRequest):
 
         processing_end = datetime.now(timezone.utc)
         duration = (processing_end - processing_start).total_seconds()
+        avg_time_per_file = duration / total_files if total_files > 0 else 0
 
         logger.info(
-            f"Batch processing completed: {successful_files} successful, {failed_files} failed"
+            f"[BATCH COMPLETE] ✓ Batch processing finished | "
+            f"Total: {total_files} | "
+            f"Successful: {successful_files} | "
+            f"Failed: {failed_files} | "
+            f"Duration: {duration:.2f}s | "
+            f"Avg per file: {avg_time_per_file:.2f}s"
         )
 
         return BatchProcessingResponse(
@@ -199,7 +240,13 @@ async def process_files(request: DateRangeRequest):
         )
 
     except Exception as e:
-        log_exception(logger, e, "Batch processing failed")
+        elapsed = (datetime.now(timezone.utc) - processing_start).total_seconds()
+        processed_count = len(results)
+        log_exception(
+            logger,
+            e,
+            f"[BATCH FAILED] ✗ Batch processing failed after {processed_count} files | Duration: {elapsed:.2f}s"
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -219,15 +266,24 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
     Raises:
         Exception: Any processing error will propagate and fail the batch
     """
-    logger.info(f"Processing file: {file_key}")
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"[FILE PROCESS] Starting processing | File: {file_key}")
 
-    # Download file from S3
+    # Step 1: Download file from S3
+    logger.debug(f"[FILE STEP 1/5] Downloading from S3 | File: {file_key}")
     file_content = s3_service.download_file(file_key)
+    logger.info(f"[FILE STEP 1/5] Downloaded {len(file_content)} bytes from S3")
 
-    # Compute hash
+    # Step 2: Compute hash
+    logger.debug(f"[FILE STEP 2/5] Computing file hash...")
     hash_info = hash_service.compute_hash(file_content, file_key)
+    logger.info(
+        f"[FILE STEP 2/5] Hash computed | "
+        f"Algorithm: {hash_info.hash_algorithm} | "
+        f"Hash: {hash_info.hash_value[:16]}..."
+    )
 
-    # Create signature request
+    # Step 3: Create signature request and send to InfoCert
     filename = os.path.basename(file_key)
     sig_request = SignatureRequest(
         file_hash=hash_info.hash_value,
@@ -235,29 +291,36 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         filename=filename,
     )
 
-    # Request signature from vendor API
+    logger.debug(f"[FILE STEP 3/5] Requesting digital signature from InfoCert...")
     sig_response = signature_service.sign_file_hash(sig_request)
+    logger.info(
+        f"[FILE STEP 3/5] Signature received | "
+        f"Timestamp: {sig_response.timestamp.isoformat()}"
+    )
 
     # P7M content is REQUIRED - fail if not available
     if not sig_response.p7m_content:
         error_msg = f"P7M content creation failed for {file_key} - signature service did not return P7M"
-        logger.error(error_msg)
+        logger.error(f"[FILE ERROR] {error_msg}")
         raise ValueError(error_msg)
 
     p7m_content = sig_response.p7m_content
+    logger.debug(f"[FILE STEP 3/5] P7M file ready | Size: {len(p7m_content)} bytes")
 
-    # Upload P7M file to S3
-    # Create P7M file key in signed/ folder
+    # Step 4: Upload P7M file to S3
     original_filename = os.path.basename(file_key)
     p7m_file_key = f"signed/{original_filename}.p7m"
+    logger.debug(f"[FILE STEP 4/5] Uploading P7M to S3 | Destination: {p7m_file_key}")
     s3_service.upload_file(
         file_content=p7m_content,
         destination_key=p7m_file_key,
         content_type="application/pkcs7-mime",
     )
     signed_file_size = len(p7m_content)
+    logger.info(f"[FILE STEP 4/5] P7M uploaded to S3 | Size: {signed_file_size} bytes")
 
-    # Save certification metadata to DynamoDB
+    # Step 5: Save certification metadata to DynamoDB
+    logger.debug(f"[FILE STEP 5/5] Saving metadata to DynamoDB...")
     dynamodb_service.save_certification(
         file_key=file_key,
         file_hash=hash_info.hash_value,
@@ -269,9 +332,17 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         signed_file_size=signed_file_size,
         status="completed",
     )
-    logger.info(f"Saved certification metadata to DynamoDB for: {file_key}")
+    logger.info(f"[FILE STEP 5/5] Metadata saved to DynamoDB")
 
-    logger.info(f"Successfully processed file: {file_key}")
+    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+    logger.info(
+        f"[FILE COMPLETE] ✓ Processing complete | "
+        f"File: {file_key} | "
+        f"Duration: {elapsed:.2f}s | "
+        f"Original: {hash_info.file_size} bytes | "
+        f"P7M: {signed_file_size} bytes | "
+        f"P7M location: {p7m_file_key}"
+    )
 
     return FileProcessingResult(
         file_key=file_key,

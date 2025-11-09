@@ -178,15 +178,16 @@ class SignatureService:
             SSLError: If mTLS authentication fails
             Timeout: If request times out
         """
+        start_time = datetime.now(timezone.utc)
         try:
             logger.info(
-                f"Creating and signing manifest for file: {signature_request.filename}"
-            )
-            logger.debug(
-                f"Hash: {signature_request.file_hash[:16]}... Algorithm: {signature_request.hash_algorithm}"
+                f"[SIGN START] File: {signature_request.filename} | "
+                f"Hash: {signature_request.file_hash[:16]}... | "
+                f"Algorithm: {signature_request.hash_algorithm}"
             )
 
             # Step 1: Create manifest JSON
+            logger.debug(f"[STEP 1/5] Creating manifest JSON for {signature_request.filename}")
             manifest = {
                 "fileName": signature_request.filename,
                 "algorithm": signature_request.hash_algorithm.upper(),
@@ -196,74 +197,99 @@ class SignatureService:
 
             # Convert manifest to JSON string
             manifest_json = json.dumps(manifest, indent=2)
-            logger.debug(f"Created manifest: {manifest_json}")
+            manifest_size = len(manifest_json.encode('utf-8'))
+            logger.info(f"[STEP 1/5] Created manifest: {manifest_size} bytes")
+            logger.debug(f"Manifest content:\n{manifest_json}")
 
             # Step 2: Base64 encode the manifest
+            logger.debug(f"[STEP 2/5] Base64 encoding manifest")
             manifest_b64 = base64.b64encode(manifest_json.encode('utf-8')).decode('ascii')
+            logger.debug(f"[STEP 2/5] Encoded manifest: {len(manifest_b64)} chars")
 
             # Step 3: Create session with mTLS
+            logger.debug(f"[STEP 3/5] Creating mTLS session for InfoCert API")
             session = self._create_session()
+            logger.info(f"[STEP 3/5] mTLS session established")
 
             # Step 4: Prepare request payload for InfoCert Sign API
-            # We're signing the MANIFEST, not just the hash
+            logger.debug(f"[STEP 4/5] Preparing InfoCert API request")
             payload = {
                 "credentialID": settings.infocert_credential_id,
                 "signRequest": {
-                    "signFormat": "CAdES",  # CAdES format for P7M
-                    "signatureLevel": "CAdES_BASELINE_B",  # CAdES-BES
+                    "signFormat": "CAdES",
+                    "signatureLevel": "CAdES_BASELINE_B",
                     "inputDocuments": [{
                         "contentType": "BASE64",
                         "content": manifest_b64
                     }]
                 }
             }
+            logger.info(f"[STEP 4/5] Sending manifest to InfoCert for signing...")
 
             # Make API request to InfoCert Sign API
             response = session.post(
-                f"{self.api_url}/sign/v2",  # InfoCert sign endpoint
+                f"{self.api_url}/sign/v2",
                 json=payload,
                 timeout=self.timeout,
             )
 
             # Check response status
             response.raise_for_status()
+            logger.info(f"[STEP 4/5] Received response from InfoCert (HTTP {response.status_code})")
 
             # Parse InfoCert response
             response_data = response.json()
+            logger.debug(f"[STEP 4/5] Response keys: {list(response_data.keys())}")
 
             # InfoCert returns signature and certificate (not complete P7M)
-            # We need to create the P7M ourselves
             signature_value_b64 = response_data.get("signatureValue", "")
             signing_cert_b64 = response_data.get("signingCertificate", "")
             signing_time = response_data.get("signingTime", datetime.now(timezone.utc).isoformat())
 
             if not signature_value_b64:
+                logger.error("[ERROR] InfoCert API did not return signatureValue")
                 raise ValueError("InfoCert API did not return signature value")
 
             if not signing_cert_b64:
+                logger.error("[ERROR] InfoCert API did not return signingCertificate")
                 raise ValueError("InfoCert API did not return signing certificate")
 
+            logger.info(
+                f"[STEP 4/5] Received signature ({len(signature_value_b64)} chars) and "
+                f"certificate ({len(signing_cert_b64)} chars)"
+            )
+
             # Decode signature and certificate
+            logger.debug(f"[STEP 5/5] Decoding signature and certificate from base64")
             signature_bytes = base64.b64decode(signature_value_b64)
             cert_bytes = base64.b64decode(signing_cert_b64)
+            logger.info(
+                f"[STEP 5/5] Decoded: signature={len(signature_bytes)} bytes, "
+                f"certificate={len(cert_bytes)} bytes"
+            )
 
             # Create P7M file from manifest, signature, and certificate
+            logger.info(f"[STEP 5/5] Creating P7M/PKCS#7 structure...")
             p7m_bytes = self._create_p7m_from_signature(
                 manifest_json.encode('utf-8'),
                 signature_bytes,
                 cert_bytes
             )
+            logger.info(f"[STEP 5/5] P7M file created: {len(p7m_bytes)} bytes")
 
             signature_response = SignatureResponse(
                 signature=signature_value_b64,
                 timestamp=datetime.fromisoformat(signing_time.replace("Z", "+00:00")),
-                p7m_content=p7m_bytes,  # Raw P7M bytes (DER-encoded PKCS#7)
+                p7m_content=p7m_bytes,
             )
 
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(
-                f"Successfully received signature for: {signature_request.filename}"
+                f"[SIGN COMPLETE] File: {signature_request.filename} | "
+                f"P7M size: {len(p7m_bytes)} bytes | "
+                f"Duration: {elapsed:.2f}s | "
+                f"Timestamp: {signature_response.timestamp.isoformat()}"
             )
-            logger.debug(f"Signature timestamp: {signature_response.timestamp}")
 
             return signature_response
 
@@ -317,20 +343,27 @@ class SignatureService:
             ValueError: If P7M creation fails
         """
         try:
-            logger.debug("Creating P7M/CAdES structure from signature")
+            logger.debug(
+                f"[P7M CREATE] Starting P7M creation | "
+                f"Manifest: {len(manifest_content)} bytes | "
+                f"Signature: {len(signature_bytes)} bytes | "
+                f"Certificate: {len(cert_der_bytes)} bytes"
+            )
 
             # Parse the certificate
+            logger.debug("[P7M CREATE] Parsing signing certificate...")
             cert = asn1_x509.Certificate.load(cert_der_bytes)
+            logger.debug(f"[P7M CREATE] Certificate parsed successfully")
 
             # Create ContentInfo for the manifest (encapContentInfo)
-            # For PKCS#7 SignedData, content is wrapped in OctetString when type is 'data'
+            logger.debug("[P7M CREATE] Building ContentInfo with manifest data...")
             encap_content_info = cms.ContentInfo({
                 'content_type': cms.ContentType('data'),
                 'content': core.OctetString(manifest_content)
             })
 
             # Get certificate hash for signer identifier
-            # For CAdES, we use IssuerAndSerialNumber
+            logger.debug("[P7M CREATE] Extracting signer info from certificate...")
             issuer = cert['tbs_certificate']['issuer']
             serial_number = cert['tbs_certificate']['serial_number']
 
@@ -341,18 +374,22 @@ class SignatureService:
                     'serial_number': serial_number
                 })
             )
+            logger.debug(f"[P7M CREATE] Signer serial number: {serial_number}")
 
             # SHA-256 digest algorithm (used for hashing the manifest)
+            logger.debug("[P7M CREATE] Setting digest algorithm: SHA-256")
             digest_algorithm = algos.DigestAlgorithm({
                 'algorithm': '2.16.840.1.101.3.4.2.1'  # SHA-256 OID
             })
 
             # RSA with SHA-256 signature algorithm (typical for InfoCert)
+            logger.debug("[P7M CREATE] Setting signature algorithm: sha256WithRSAEncryption")
             signature_algorithm = algos.SignedDigestAlgorithm({
                 'algorithm': '1.2.840.113549.1.1.11'  # sha256WithRSAEncryption OID
             })
 
             # Create SignerInfo
+            logger.debug("[P7M CREATE] Building SignerInfo structure...")
             signer_info = cms.SignerInfo({
                 'version': 'v1',
                 'sid': signer_identifier,
@@ -362,6 +399,7 @@ class SignatureService:
             })
 
             # Create SignedData
+            logger.debug("[P7M CREATE] Building CAdES SignedData structure...")
             signed_data = cms.SignedData({
                 'version': 'v1',
                 'digest_algorithms': cms.DigestAlgorithms([digest_algorithm]),
@@ -373,15 +411,21 @@ class SignatureService:
             })
 
             # Wrap in ContentInfo
+            logger.debug("[P7M CREATE] Wrapping in PKCS#7 ContentInfo...")
             content_info = cms.ContentInfo({
                 'content_type': cms.ContentType('signed_data'),
                 'content': signed_data
             })
 
             # Encode to DER (this is the P7M file)
+            logger.debug("[P7M CREATE] Encoding to DER format...")
             p7m_bytes = content_info.dump()
 
-            logger.info(f"Successfully created P7M file: {len(p7m_bytes)} bytes")
+            logger.info(
+                f"[P7M CREATE] ✓ P7M file created successfully | "
+                f"Size: {len(p7m_bytes)} bytes | "
+                f"Format: PKCS#7/CAdES-BES"
+            )
             return p7m_bytes
 
         except Exception as e:

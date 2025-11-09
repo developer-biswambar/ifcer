@@ -62,6 +62,7 @@ class DynamoDBService:
         Returns:
             True if successful
         """
+        start_time = datetime.now(timezone.utc)
         try:
             processing_timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -70,6 +71,13 @@ class DynamoDBService:
 
             # Extract date partition for GSI (YYYY-MM format)
             date_partition = processing_timestamp[:7]  # "2025-01"
+
+            logger.debug(
+                f"[DYNAMODB SAVE] Preparing certification record | "
+                f"File: {file_key} | "
+                f"Status: {status} | "
+                f"Hash: {file_hash[:16]}..."
+            )
 
             item = {
                 "file_key": file_key,
@@ -93,20 +101,34 @@ class DynamoDBService:
                 item["vendor_response"] = vendor_response
 
             # Add TTL if configured
+            ttl_info = ""
             if settings.dynamodb_ttl_days:
                 ttl = datetime.now(timezone.utc) + timedelta(days=settings.dynamodb_ttl_days)
                 item["ttl"] = int(ttl.timestamp())
+                ttl_info = f" | TTL: {settings.dynamodb_ttl_days} days"
 
+            logger.debug(f"[DYNAMODB SAVE] Writing item to table: {self.table_name}")
             self.table.put_item(Item=item)
 
-            logger.info(f"Saved certification metadata for: {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            logger.info(
+                f"[DYNAMODB SAVE] ✓ Certification saved | "
+                f"Table: {self.table_name} | "
+                f"File: {file_key} | "
+                f"Status: {status} | "
+                f"Original size: {file_size:,} bytes | "
+                f"P7M size: {signed_file_size:,} bytes | "
+                f"Duration: {elapsed:.2f}s{ttl_info}"
+            )
             return True
 
         except ClientError as e:
-            log_exception(logger, e, f"Failed to save certification: {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[DYNAMODB SAVE] Failed to save certification: {file_key} after {elapsed:.2f}s")
             raise
         except Exception as e:
-            log_exception(logger, e, f"Unexpected error saving certification: {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[DYNAMODB SAVE] Unexpected error saving certification: {file_key} after {elapsed:.2f}s")
             raise
 
     def get_certification(self, file_key: str) -> Optional[Dict[str, Any]]:

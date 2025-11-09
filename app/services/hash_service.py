@@ -1,6 +1,7 @@
 """Hash service for computing file hashes."""
 
 import hashlib
+from datetime import datetime, timezone
 from typing import BinaryIO
 from app.config import settings
 from app.models.schemas import FileHashInfo
@@ -32,8 +33,15 @@ class HashService:
             ValueError: If hash algorithm is not supported
             Exception: If hash computation fails
         """
+        start_time = datetime.now(timezone.utc)
         try:
-            logger.debug(f"Computing {self.algorithm} hash for: {file_key}")
+            file_size = len(file_content)
+            logger.debug(
+                f"[HASH COMPUTE] Starting hash computation | "
+                f"File: {file_key} | "
+                f"Algorithm: {self.algorithm.upper()} | "
+                f"Size: {file_size:,} bytes"
+            )
 
             # Create hash object based on configured algorithm
             if self.algorithm.lower() == "sha256":
@@ -51,22 +59,36 @@ class HashService:
             hash_obj.update(file_content)
             hash_value = hash_obj.hexdigest()
 
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+            # Calculate throughput
+            size_mb = file_size / (1024 * 1024)
+            throughput_mbps = (size_mb / elapsed) if elapsed > 0 else 0
+
             logger.info(
-                f"Computed hash for {file_key}: {hash_value[:16]}... (length: {len(file_content)} bytes)"
+                f"[HASH COMPUTE] ✓ Hash computed | "
+                f"File: {file_key} | "
+                f"Algorithm: {self.algorithm.upper()} | "
+                f"Hash: {hash_value[:16]}... | "
+                f"Size: {file_size:,} bytes ({size_mb:.2f} MB) | "
+                f"Duration: {elapsed:.3f}s | "
+                f"Throughput: {throughput_mbps:.2f} MB/s"
             )
 
             return FileHashInfo(
                 file_key=file_key,
                 hash_value=hash_value,
                 hash_algorithm=self.algorithm,
-                file_size=len(file_content),
+                file_size=file_size,
             )
 
         except ValueError as e:
-            log_exception(logger, e, "Invalid hash algorithm")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[HASH COMPUTE] Invalid hash algorithm after {elapsed:.3f}s")
             raise
         except Exception as e:
-            log_exception(logger, e, f"Failed to compute hash for {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[HASH COMPUTE] Failed to compute hash for {file_key} after {elapsed:.3f}s")
             raise
 
     def compute_hash_from_stream(

@@ -2,7 +2,7 @@
 
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, BinaryIO
 from app.config import settings
 from app.models.schemas import S3FileMetadata
@@ -47,12 +47,18 @@ class S3Service:
         Raises:
             ClientError: If S3 operation fails
         """
+        start_time = datetime.now(timezone.utc)
         try:
             logger.info(
-                f"Listing files from {start_date} to {end_date} with prefix: {prefix or 'None'}"
+                f"[S3 LIST] Starting file listing | "
+                f"Bucket: {self.bucket_name} | "
+                f"Date range: {start_date.isoformat()} to {end_date.isoformat()} | "
+                f"Prefix: {prefix or 'None'}"
             )
 
             files = []
+            total_objects_scanned = 0
+            page_count = 0
             paginator = self.s3_client.get_paginator("list_objects_v2")
 
             pagination_config = {
@@ -65,8 +71,14 @@ class S3Service:
             page_iterator = paginator.paginate(**pagination_config)
 
             for page in page_iterator:
+                page_count += 1
                 if "Contents" not in page:
+                    logger.debug(f"[S3 LIST] Page {page_count} contains no objects")
                     continue
+
+                page_objects = len(page["Contents"])
+                total_objects_scanned += page_objects
+                logger.debug(f"[S3 LIST] Processing page {page_count} | Objects: {page_objects}")
 
                 for obj in page["Contents"]:
                     last_modified = obj["LastModified"]
@@ -81,14 +93,25 @@ class S3Service:
                         )
                         files.append(file_metadata)
 
-            logger.info(f"Found {len(files)} files matching criteria")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            total_size = sum(f.size for f in files)
+            logger.info(
+                f"[S3 LIST] ✓ File listing complete | "
+                f"Found: {len(files)} files | "
+                f"Scanned: {total_objects_scanned} objects | "
+                f"Pages: {page_count} | "
+                f"Total size: {total_size:,} bytes | "
+                f"Duration: {elapsed:.2f}s"
+            )
             return files
 
         except ClientError as e:
-            log_exception(logger, e, "Failed to list S3 files")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 LIST] Failed to list S3 files after {elapsed:.2f}s")
             raise
         except Exception as e:
-            log_exception(logger, e, "Unexpected error listing S3 files")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 LIST] Unexpected error listing S3 files after {elapsed:.2f}s")
             raise
 
     def download_file(self, file_key: str) -> bytes:
@@ -104,23 +127,38 @@ class S3Service:
         Raises:
             ClientError: If S3 operation fails
         """
+        start_time = datetime.now(timezone.utc)
         try:
-            logger.debug(f"Downloading file: {file_key}")
+            logger.debug(f"[S3 DOWNLOAD] Starting download | File: {file_key}")
 
             response = self.s3_client.get_object(
                 Bucket=self.bucket_name, Key=file_key
             )
 
             file_content = response["Body"].read()
-            logger.debug(f"Downloaded {len(file_content)} bytes from {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+            # Calculate download speed
+            size_mb = len(file_content) / (1024 * 1024)
+            speed_mbps = (size_mb / elapsed) if elapsed > 0 else 0
+
+            logger.info(
+                f"[S3 DOWNLOAD] ✓ Download complete | "
+                f"File: {file_key} | "
+                f"Size: {len(file_content):,} bytes ({size_mb:.2f} MB) | "
+                f"Duration: {elapsed:.2f}s | "
+                f"Speed: {speed_mbps:.2f} MB/s"
+            )
 
             return file_content
 
         except ClientError as e:
-            log_exception(logger, e, f"Failed to download file: {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 DOWNLOAD] Failed to download file: {file_key} after {elapsed:.2f}s")
             raise
         except Exception as e:
-            log_exception(logger, e, f"Unexpected error downloading file: {file_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 DOWNLOAD] Unexpected error downloading file: {file_key} after {elapsed:.2f}s")
             raise
 
     def upload_file(
@@ -140,8 +178,14 @@ class S3Service:
         Raises:
             ClientError: If S3 operation fails
         """
+        start_time = datetime.now(timezone.utc)
         try:
-            logger.info(f"Uploading file to: {destination_key}")
+            logger.debug(
+                f"[S3 UPLOAD] Starting upload | "
+                f"Destination: {destination_key} | "
+                f"Size: {len(file_content):,} bytes | "
+                f"Content-Type: {content_type}"
+            )
 
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -150,14 +194,28 @@ class S3Service:
                 ContentType=content_type,
             )
 
-            logger.info(f"Successfully uploaded file: {destination_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+            # Calculate upload speed
+            size_mb = len(file_content) / (1024 * 1024)
+            speed_mbps = (size_mb / elapsed) if elapsed > 0 else 0
+
+            logger.info(
+                f"[S3 UPLOAD] ✓ Upload complete | "
+                f"Destination: {destination_key} | "
+                f"Size: {len(file_content):,} bytes ({size_mb:.2f} MB) | "
+                f"Duration: {elapsed:.2f}s | "
+                f"Speed: {speed_mbps:.2f} MB/s"
+            )
             return True
 
         except ClientError as e:
-            log_exception(logger, e, f"Failed to upload file: {destination_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 UPLOAD] Failed to upload file: {destination_key} after {elapsed:.2f}s")
             raise
         except Exception as e:
-            log_exception(logger, e, f"Unexpected error uploading file: {destination_key}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(logger, e, f"[S3 UPLOAD] Unexpected error uploading file: {destination_key} after {elapsed:.2f}s")
             raise
 
     def check_bucket_access(self) -> bool:
@@ -170,12 +228,24 @@ class S3Service:
         Raises:
             ClientError: If bucket is not accessible
         """
+        start_time = datetime.now(timezone.utc)
         try:
+            logger.debug(f"[S3 CHECK] Checking bucket access | Bucket: {self.bucket_name}")
             self.s3_client.head_bucket(Bucket=self.bucket_name)
-            logger.info(f"Successfully accessed bucket: {self.bucket_name}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            logger.info(
+                f"[S3 CHECK] ✓ Bucket accessible | "
+                f"Bucket: {self.bucket_name} | "
+                f"Duration: {elapsed:.2f}s"
+            )
             return True
         except ClientError as e:
-            log_exception(logger, e, f"Cannot access bucket: {self.bucket_name}")
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            log_exception(
+                logger,
+                e,
+                f"[S3 CHECK] ✗ Cannot access bucket: {self.bucket_name} | Duration: {elapsed:.2f}s"
+            )
             raise
 
     def file_exists(self, file_key: str) -> bool:
