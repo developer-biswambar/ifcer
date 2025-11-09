@@ -19,16 +19,15 @@ Reference: https://developers.infocert.digital/e-signature-and-e-sealing/
 
 import base64
 import json
-import requests
-from requests.exceptions import RequestException, Timeout, SSLError
-from typing import Optional
-from datetime import datetime, timezone
-import tempfile
 import os
+import tempfile
+from datetime import datetime, timezone
+
 import boto3
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
+import requests
 from asn1crypto import cms, core, algos, x509 as asn1_x509
+from requests.exceptions import RequestException, Timeout, SSLError
+
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
 from app.utils.logger import setup_logger, log_exception
