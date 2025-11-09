@@ -1,6 +1,6 @@
 # IFCER - Italian File Certification and Registration Batch Service
 
-A Python-based batch service for processing files from AWS S3, computing cryptographic hashes, obtaining digital signatures with timestamps via vendor API using mTLS authentication, and creating P7M (PKCS#7) files for Italian register submission.
+A Python-based batch service for processing files from AWS S3, computing cryptographic hashes, obtaining qualified digital signatures via **InfoCert's API** using mTLS authentication, and creating P7M (CAdES) files for Italian register submission compliant with eIDAS regulations.
 
 ## Overview
 
@@ -8,10 +8,10 @@ This service is designed to run as an AWS ECS task triggered by EventBridge. It 
 
 1. Fetches files from an S3 bucket based on a date range (upload date)
 2. Computes SHA-256 hash for each file
-3. Sends file hashes to a vendor API using mTLS authentication
-4. Receives digital signatures and timestamps from the vendor
-5. Creates P7M files for Italian register submission
-6. Uploads P7M files back to S3
+3. Sends file hashes to InfoCert's Sign API using mTLS authentication
+4. Receives CAdES-BES digital signatures (P7M files) from InfoCert
+5. Stores signed P7M files in S3 for Italian register submission
+6. Maintains certification metadata in DynamoDB for audit trail
 
 ## Architecture
 
@@ -20,13 +20,13 @@ This service is designed to run as an AWS ECS task triggered by EventBridge. It 
 │   AWS ECS   │─────▶│ IFCER Service│◀────▶│   AWS S3    │
 │ EventBridge │      │   (FastAPI)  │      │   Bucket    │
 └─────────────┘      └──────┬───────┘      └─────────────┘
-                            │
-                            │ mTLS
-                            ▼
-                     ┌──────────────┐
-                     │  Vendor API  │
-                     │  (Signature) │
-                     └──────────────┘
+                            │                      │
+                            │ mTLS                 │
+                            ▼                      ▼
+                     ┌──────────────┐      ┌─────────────┐
+                     │  InfoCert    │      │  DynamoDB   │
+                     │  Sign API    │      │ (Metadata)  │
+                     └──────────────┘      └─────────────┘
 ```
 
 ## Project Structure
@@ -77,9 +77,10 @@ AWS_REGION=eu-south-1
 S3_BUCKET_NAME=your-bucket-name
 DYNAMODB_TABLE_NAME=ifcer-certifications
 
-# Vendor API Configuration (mTLS)
+# InfoCert API Configuration (mTLS)
+# InfoCert's Multiple Automatic Hash Signature API
 # Certificates are stored in S3 and loaded during application startup
-VENDOR_API_URL=https://vendor-api.example.com
+VENDOR_API_URL=https://sign.infocert.it/api/v1
 VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
 VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
 VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
@@ -158,7 +159,7 @@ docker run -d \
   -e AWS_REGION=eu-south-1 \
   -e S3_BUCKET_NAME=your-bucket-name \
   -e DYNAMODB_TABLE_NAME=ifcer-certifications \
-  -e VENDOR_API_URL=https://vendor-api.example.com \
+  -e VENDOR_API_URL=https://sign.infocert.it/api/v1 \
   -e VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem \
   -e VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem \
   -e VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem \
@@ -185,13 +186,13 @@ services:
     env_file:
       - .env
     environment:
-      - AWS_REGION=${AWS_REGION}
+      - AWS_REGION=${AWS_REGION:-eu-south-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME}
-      - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME}
-      - VENDOR_API_URL=${VENDOR_API_URL}
-      - VENDOR_MTLS_CERT_S3_KEY=${VENDOR_MTLS_CERT_S3_KEY}
-      - VENDOR_MTLS_KEY_S3_KEY=${VENDOR_MTLS_KEY_S3_KEY}
-      - VENDOR_MTLS_CA_S3_KEY=${VENDOR_MTLS_CA_S3_KEY}
+      - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-ifcer-certifications}
+      - VENDOR_API_URL=${VENDOR_API_URL:-https://sign.infocert.it/api/v1}
+      - VENDOR_MTLS_CERT_S3_KEY=${VENDOR_MTLS_CERT_S3_KEY:-certs/client_cert.pem}
+      - VENDOR_MTLS_KEY_S3_KEY=${VENDOR_MTLS_KEY_S3_KEY:-certs/client_key.pem}
+      - VENDOR_MTLS_CA_S3_KEY=${VENDOR_MTLS_CA_S3_KEY:-certs/ca_bundle.pem}
     restart: unless-stopped
 ```
 
@@ -732,7 +733,7 @@ The ECS task role needs these permissions:
         {"name": "AWS_REGION", "value": "eu-south-1"},
         {"name": "S3_BUCKET_NAME", "value": "your-bucket-name"},
         {"name": "DYNAMODB_TABLE_NAME", "value": "ifcer-certifications"},
-        {"name": "VENDOR_API_URL", "value": "https://vendor-api.example.com"},
+        {"name": "VENDOR_API_URL", "value": "https://sign.infocert.it/api/v1"},
         {"name": "VENDOR_MTLS_CERT_S3_KEY", "value": "certs/client_cert.pem"},
         {"name": "VENDOR_MTLS_KEY_S3_KEY", "value": "certs/client_key.pem"},
         {"name": "VENDOR_MTLS_CA_S3_KEY", "value": "certs/ca_bundle.pem"}
@@ -815,16 +816,63 @@ The service includes comprehensive error handling and logging:
 - [ ] Dead letter queue for failed files
 - [ ] Notification service for processing completion
 
-## Vendor API Integration
+## InfoCert API Integration
 
-The vendor API endpoint structure is currently a placeholder. Update the following in `app/services/signature_service.py`:
+This service is configured to work with **InfoCert's Multiple Automatic Hash Signature API** for obtaining qualified digital signatures compliant with eIDAS regulations.
 
-1. API endpoint paths
-2. Request payload format
-3. Response parsing logic
-4. P7M file creation (if not provided by vendor)
+### API Workflow
 
-Refer to your vendor's API documentation for the exact specifications.
+The service follows InfoCert's hash signature workflow:
+
+1. **Hash Computation**: Compute SHA-256 hash of the document locally
+2. **API Request**: Send hash to InfoCert Sign API (`/sign/hash` endpoint) with:
+   - `hashAlgorithmOID`: OID of the hash algorithm (e.g., `2.16.840.1.101.3.4.2.1` for SHA-256)
+   - `hash`: The computed document hash
+   - `signatureLevel`: `CAdES_BASELINE_B` for P7M format
+   - `signaturePackaging`: `ENVELOPING` for standard P7M
+   - `digestAlgorithm`: Hash algorithm name (e.g., `SHA256`)
+3. **API Response**: InfoCert returns:
+   - `signedDocument`: Base64-encoded P7M file (CAdES format)
+   - `signatureValue`: The digital signature value
+   - `signingTime`: Timestamp of signature creation
+4. **P7M Storage**: Decode and store the P7M file in S3 `signed/` folder
+
+### Configuration
+
+Set the InfoCert API base URL in your environment:
+
+```bash
+VENDOR_API_URL=https://sign.infocert.it/api/v1
+```
+
+The service automatically:
+- Loads mTLS certificates from S3 during startup
+- Converts hash algorithms to OIDs
+- Handles base64 encoding/decoding
+- Validates P7M file structure (PKCS#7 format)
+
+### Supported Hash Algorithms
+
+The service supports the following hash algorithms with their OIDs:
+- **SHA-256** (recommended): `2.16.840.1.101.3.4.2.1`
+- **SHA-512**: `2.16.840.1.101.3.4.2.3`
+- **SHA-384**: `2.16.840.1.101.3.4.2.2`
+- **SHA-224**: `2.16.840.1.101.3.4.2.4`
+- **SHA-1** (deprecated): `1.3.14.3.2.26`
+
+### CAdES Format
+
+InfoCert returns signatures in **CAdES-BES/CAdES-BASELINE-B** format, which:
+- Complies with ETSI TS 119 122-1 specification
+- Is the standard for Italian digital signatures
+- Creates P7M files (PKCS#7 enveloping signature)
+- Includes the signer's certificate in the signature container
+
+### Documentation
+
+For more details, refer to:
+- InfoCert Developers Portal: https://developers.infocert.digital/
+- Multiple Automatic Hash Signature: https://developers.infocert.digital/e-signature-and-e-sealing/use-cases/multiple-automatic-hash-signature/
 
 ## License
 

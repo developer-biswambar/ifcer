@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     dynamodb_table_name: str = "ifcer-certifications"
     dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
 
-    # Vendor API settings (mTLS)
+    # InfoCert API settings (mTLS)
+    # InfoCert's Multiple Automatic Hash Signature API
     # Certificates are stored in S3 and loaded during application startup
+    # API URL should point to InfoCert's Sign API base URL
+    # Example: https://sign.infocert.it/api/v1
     vendor_api_url: str
     vendor_mtls_cert_s3_key: str = "certs/client_cert.pem"
     vendor_mtls_key_s3_key: str = "certs/client_key.pem"
