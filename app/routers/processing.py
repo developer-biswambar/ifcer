@@ -69,6 +69,9 @@ async def recertify_single_file(request: SingleFileRequest):
     """
     Recertify a single file from S3.
 
+    FAIL-FAST BEHAVIOR: If processing fails (including P7M creation), the operation
+    will fail immediately with an error. P7M creation is REQUIRED.
+
     This endpoint allows you to process a single file by its S3 key, useful for:
     - Recertifying files that previously failed
     - Re-signing files that need updated timestamps
@@ -78,26 +81,26 @@ async def recertify_single_file(request: SingleFileRequest):
     1. Downloads the file from S3 using the provided key
     2. Computes the file hash
     3. Sends hash to vendor API for digital signature and timestamp
-    4. Creates P7M file for Italian register submission
+    4. Creates P7M file (REQUIRED - fails if P7M creation fails)
     5. Uploads P7M file back to S3 in signed/ folder
+    6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
 
     Args:
         request: SingleFileRequest with file_key
 
     Returns:
-        FileProcessingResult with processing outcome
+        FileProcessingResult with processing outcome (only on success)
+
+    Raises:
+        HTTPException: If processing fails at any step (fail-fast behavior)
     """
     try:
         logger.info(f"Recertifying single file: {request.file_key}")
 
-        # Process the single file
+        # Process the single file - will raise exception if anything fails
         result = await process_single_file(request.file_key)
 
-        if result.status == ProcessingStatus.FAILED:
-            logger.error(f"Failed to recertify file: {request.file_key}")
-        else:
-            logger.info(f"Successfully recertified file: {request.file_key}")
-
+        logger.info(f"Successfully recertified file: {request.file_key}")
         return result
 
     except Exception as e:
@@ -110,18 +113,26 @@ async def process_files(request: DateRangeRequest):
     """
     Process files from S3 bucket within the specified date range.
 
+    FAIL-FAST BEHAVIOR: If ANY single file fails processing (including P7M creation),
+    the ENTIRE batch will fail immediately. This ensures data consistency and prevents
+    partial processing.
+
     This endpoint:
     1. Fetches files from S3 based on upload date range
     2. Computes hash for each file
     3. Sends hash to vendor API for digital signature and timestamp
-    4. Creates P7M files for Italian register submission
+    4. Creates P7M files (REQUIRED - fails if P7M creation fails)
     5. Uploads P7M files back to S3 in signed/ folder
+    6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
 
     Args:
         request: DateRangeRequest with start_date, end_date, and optional prefix
 
     Returns:
-        BatchProcessingResponse with processing results
+        BatchProcessingResponse with processing results (only if ALL files succeed)
+
+    Raises:
+        HTTPException: If any file fails processing (fail-fast behavior)
     """
     processing_start = datetime.now(timezone.utc)
     results: List[FileProcessingResult] = []
@@ -196,121 +207,78 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
     """
     Process a single file: download, hash, sign, create P7M, upload.
 
+    This function does NOT catch exceptions - failures will propagate to the caller,
+    causing the entire batch to fail. This ensures fail-fast behavior.
+
     Args:
         file_key: S3 file key
 
     Returns:
         FileProcessingResult with processing outcome
+
+    Raises:
+        Exception: Any processing error will propagate and fail the batch
     """
-    try:
-        logger.info(f"Processing file: {file_key}")
+    logger.info(f"Processing file: {file_key}")
 
-        # Download file from S3
-        file_content = s3_service.download_file(file_key)
+    # Download file from S3
+    file_content = s3_service.download_file(file_key)
 
-        # Compute hash
-        hash_info = hash_service.compute_hash(file_content, file_key)
+    # Compute hash
+    hash_info = hash_service.compute_hash(file_content, file_key)
 
-        # Create signature request
-        filename = os.path.basename(file_key)
-        sig_request = SignatureRequest(
-            file_hash=hash_info.hash_value,
-            hash_algorithm=hash_info.hash_algorithm,
-            filename=filename,
-        )
+    # Create signature request
+    filename = os.path.basename(file_key)
+    sig_request = SignatureRequest(
+        file_hash=hash_info.hash_value,
+        hash_algorithm=hash_info.hash_algorithm,
+        filename=filename,
+    )
 
-        # Request signature from vendor API
-        sig_response = signature_service.sign_file_hash(sig_request)
+    # Request signature from vendor API
+    sig_response = signature_service.sign_file_hash(sig_request)
 
-        # Create P7M file (if not provided by vendor)
-        # Note: If vendor returns P7M content, use that directly
-        if sig_response.p7m_content:
-            p7m_content = sig_response.p7m_content
-        else:
-            # P7M creation is now handled by SignatureService
-            logger.warning(
-                f"P7M content not available for {file_key}, skipping P7M upload"
-            )
-            p7m_content = None
+    # P7M content is REQUIRED - fail if not available
+    if not sig_response.p7m_content:
+        error_msg = f"P7M content creation failed for {file_key} - signature service did not return P7M"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
-        # Upload P7M file to S3 (if available)
-        p7m_file_key = None
-        signed_file_size = None
-        if p7m_content:
-            # Create P7M file key in signed/ folder
-            # Extract just the filename from the original key
-            original_filename = os.path.basename(file_key)
-            p7m_file_key = f"signed/{original_filename}.p7m"
-            s3_service.upload_file(
-                file_content=p7m_content,
-                destination_key=p7m_file_key,
-                content_type="application/pkcs7-mime",
-            )
-            signed_file_size = len(p7m_content)
+    p7m_content = sig_response.p7m_content
 
-        # Save certification metadata to DynamoDB
-        if p7m_file_key:  # Only save if we have a signed file
-            try:
-                dynamodb_service.save_certification(
-                    file_key=file_key,
-                    file_hash=hash_info.hash_value,
-                    hash_algorithm=hash_info.hash_algorithm,
-                    digital_signature=sig_response.signature,
-                    vendor_timestamp=sig_response.timestamp,
-                    signed_file_key=p7m_file_key,
-                    file_size=hash_info.file_size,
-                    signed_file_size=signed_file_size,
-                    status="completed",
-                )
-                logger.info(f"Saved certification metadata to DynamoDB for: {file_key}")
-            except Exception as db_error:
-                # Log but don't fail the entire process if DynamoDB save fails
-                log_exception(logger, db_error, f"Failed to save metadata to DynamoDB for: {file_key}")
+    # Upload P7M file to S3
+    # Create P7M file key in signed/ folder
+    original_filename = os.path.basename(file_key)
+    p7m_file_key = f"signed/{original_filename}.p7m"
+    s3_service.upload_file(
+        file_content=p7m_content,
+        destination_key=p7m_file_key,
+        content_type="application/pkcs7-mime",
+    )
+    signed_file_size = len(p7m_content)
 
-        logger.info(f"Successfully processed file: {file_key}")
+    # Save certification metadata to DynamoDB
+    dynamodb_service.save_certification(
+        file_key=file_key,
+        file_hash=hash_info.hash_value,
+        hash_algorithm=hash_info.hash_algorithm,
+        digital_signature=sig_response.signature,
+        vendor_timestamp=sig_response.timestamp,
+        signed_file_key=p7m_file_key,
+        file_size=hash_info.file_size,
+        signed_file_size=signed_file_size,
+        status="completed",
+    )
+    logger.info(f"Saved certification metadata to DynamoDB for: {file_key}")
 
-        return FileProcessingResult(
-            file_key=file_key,
-            status=ProcessingStatus.COMPLETED,
-            file_hash=hash_info.hash_value,
-            signature=sig_response.signature,
-            timestamp=sig_response.timestamp,
-            p7m_file_key=p7m_file_key,
-            error_message=None,
-        )
+    logger.info(f"Successfully processed file: {file_key}")
 
-    except Exception as e:
-        log_exception(logger, e, f"Failed to process file: {file_key}")
-
-        # Try to save failure to DynamoDB for audit trail
-        try:
-            # Get file metadata for size information
-            file_meta = s3_service.get_file_metadata(file_key)
-            file_size = file_meta.size if file_meta else 0
-
-            dynamodb_service.save_certification(
-                file_key=file_key,
-                file_hash="",  # Not available on failure
-                hash_algorithm=hash_service.algorithm,
-                digital_signature="",  # Not available on failure
-                vendor_timestamp=datetime.now(timezone.utc),  # Use current time
-                signed_file_key="",  # Not available on failure
-                file_size=file_size,
-                signed_file_size=0,
-                status="failed",
-                error_message=str(e),
-            )
-            logger.info(f"Saved failure metadata to DynamoDB for: {file_key}")
-        except Exception as db_error:
-            # Log but don't cascade the failure
-            log_exception(logger, db_error, f"Failed to save failure metadata for: {file_key}")
-
-        return FileProcessingResult(
-            file_key=file_key,
-            status=ProcessingStatus.FAILED,
-            file_hash=None,
-            signature=None,
-            timestamp=None,
-            p7m_file_key=None,
-            error_message=str(e),
-        )
+    return FileProcessingResult(
+        file_key=file_key,
+        status=ProcessingStatus.COMPLETED,
+        file_hash=hash_info.hash_value,
+        signature=sig_response.signature,
+        timestamp=sig_response.timestamp,
+        p7m_file_key=p7m_file_key,
+        error_message=None,
+    )
