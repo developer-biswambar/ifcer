@@ -392,65 +392,6 @@ class SignatureService:
             log_exception(logger, e, "Failed to create P7M file from signature")
             raise ValueError(f"P7M creation failed: {str(e)}")
 
-    def create_p7m_file(
-        self, original_content: bytes, signature: str, timestamp: datetime
-    ) -> bytes:
-        """
-        Decode and return the P7M file we created from InfoCert's signature.
-
-        Manifest-based approach for Italian register submission:
-        - The P7M contains a signed MANIFEST (not the original file)
-        - The manifest is a JSON file containing: fileName, hash, algorithm, timestamp
-        - The original file remains unchanged in S3
-        - The P7M proves the integrity of the original file through its hash
-
-        This approach is compliant with eIDAS regulations and AgID standards.
-
-        Workflow:
-        1. Create manifest JSON with file metadata and hash
-        2. Send manifest to InfoCert for signing
-        3. InfoCert returns signature and certificate
-        4. We create CAdES-BES/CAdES-BASELINE-B P7M structure using asn1crypto
-        5. P7M contains: manifest + signature + signer certificate
-
-        Storage structure:
-        - Original file: s3://bucket/documents/file.pdf
-        - Signed manifest: s3://bucket/signed/file.pdf.p7m (contains signed manifest)
-
-        Args:
-            original_content: Original file content (not used in manifest-based approach)
-            signature: Base64-encoded P7M content we created from InfoCert's signature
-            timestamp: Signing timestamp from InfoCert (for logging/metadata)
-
-        Returns:
-            P7M file content as bytes (decoded from base64) - signed manifest
-
-        Raises:
-            ValueError: If signature content is invalid or empty
-        """
-        if not signature:
-            logger.error("Cannot create P7M file: signature content is empty")
-            raise ValueError("P7M content is required")
-
-        try:
-            # Decode base64-encoded P7M content that we created
-            p7m_content = base64.b64decode(signature)
-
-            logger.info(
-                f"Successfully decoded P7M file: {len(p7m_content)} bytes, "
-                f"signed at {timestamp.isoformat()}"
-            )
-
-            # Validate P7M content has proper PKCS#7 header
-            if not p7m_content.startswith(b'\x30'):  # PKCS#7 structures start with 0x30 (SEQUENCE)
-                logger.warning("P7M content may not be valid PKCS#7 format")
-
-            return p7m_content
-
-        except Exception as e:
-            log_exception(logger, e, "Failed to decode P7M content")
-            raise ValueError(f"Invalid P7M content: {str(e)}")
-
     def health_check(self) -> bool:
         """
         Check if vendor API is accessible with mTLS authentication.
