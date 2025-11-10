@@ -1,5 +1,6 @@
 """Shared test fixtures for IFCER Batch Service tests."""
 
+import os
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import Mock, MagicMock, patch
@@ -7,6 +8,19 @@ from typing import Generator, Dict, Any
 import boto3
 from moto import mock_aws
 from fastapi.testclient import TestClient
+
+# Set required environment variables BEFORE importing app modules
+# This prevents Settings validation errors during import
+os.environ.setdefault("S3_BUCKET_NAME", "test-bucket")
+os.environ.setdefault("DYNAMODB_TABLE_NAME", "test-certifications")
+os.environ.setdefault("VENDOR_API_URL", "https://test.infocert.it/api")
+os.environ.setdefault("INFOCERT_CREDENTIAL_ID", "test-credential-id")
+os.environ.setdefault("VENDOR_MTLS_CERT_S3_KEY", "certs/test_cert.pem")
+os.environ.setdefault("VENDOR_MTLS_KEY_S3_KEY", "certs/test_key.pem")
+os.environ.setdefault("VENDOR_MTLS_CA_S3_KEY", "certs/test_ca.pem")
+os.environ.setdefault("AWS_REGION", "eu-south-1")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
 from app.config import Settings
 from app.models.schemas import SignatureResponse
