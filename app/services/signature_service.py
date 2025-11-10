@@ -47,7 +47,23 @@ class SignatureService:
         logger.info(f"Loading mTLS certificates from S3 bucket: {settings.s3_bucket_name}")
 
         try:
-            s3_client = boto3.client("s3", region_name=settings.aws_region)
+            # Prepare boto3 client configuration
+            client_config = {
+                "region_name": settings.aws_region
+            }
+
+            # Add endpoint_url for moto/LocalStack testing
+            if settings.aws_endpoint_url:
+                client_config["endpoint_url"] = settings.aws_endpoint_url
+                logger.info(f"Using custom AWS endpoint for certificates: {settings.aws_endpoint_url}")
+
+            # Add explicit credentials if provided (for moto/LocalStack)
+            if settings.aws_access_key_id and settings.aws_secret_access_key:
+                client_config["aws_access_key_id"] = settings.aws_access_key_id
+                client_config["aws_secret_access_key"] = settings.aws_secret_access_key
+                logger.debug("Using explicit AWS credentials for certificate download")
+
+            s3_client = boto3.client("s3", **client_config)
 
             # Download client certificate
             cert_content = self._download_from_s3(s3_client, settings.vendor_mtls_cert_s3_key)
