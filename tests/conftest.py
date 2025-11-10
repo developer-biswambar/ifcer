@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, MagicMock, patch
 from typing import Generator, Dict, Any
 import boto3
-from moto import mock_s3, mock_dynamodb
+from moto import mock_aws
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -64,14 +64,14 @@ def aws_credentials():
 @pytest.fixture
 def s3_mock(aws_credentials):
     """Create a mocked S3 service."""
-    with mock_s3():
+    with mock_aws():
         yield boto3.client("s3", region_name="eu-south-1")
 
 
 @pytest.fixture
 def dynamodb_mock(aws_credentials):
     """Create a mocked DynamoDB service."""
-    with mock_dynamodb():
+    with mock_aws():
         yield boto3.resource("dynamodb", region_name="eu-south-1")
 
 
