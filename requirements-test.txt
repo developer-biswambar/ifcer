@@ -1,0 +1,29 @@
+# Testing dependencies for IFCER Batch Service
+# Install with: pip install -r requirements-test.txt
+
+# Core testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1  # For testing async endpoints
+pytest-cov==4.1.0  # Code coverage
+pytest-timeout==2.2.0  # Test timeouts
+pytest-mock==3.12.0  # Enhanced mocking
+
+# HTTP testing
+httpx==0.25.2  # For testing FastAPI endpoints
+requests-mock==1.11.0  # For mocking requests library
+
+# AWS mocking
+moto[s3,dynamodb]==5.0.0  # Mock AWS services
+boto3-stubs[s3,dynamodb]==1.34.0  # Type stubs for boto3
+
+# Faker for test data generation
+Faker==20.1.0
+
+# Code quality tools
+black==23.12.1  # Code formatting
+flake8==6.1.0  # Linting
+mypy==1.7.1  # Type checking
+isort==5.13.2  # Import sorting
+
+# Install main dependencies as well
+-r requirements.txt
