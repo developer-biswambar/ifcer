@@ -22,6 +22,22 @@ os.environ.setdefault("AWS_REGION", "eu-south-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
+# Start moto mock BEFORE importing any app modules
+# This prevents SignatureService from trying to download real S3 files during import
+_moto_mock = mock_aws()
+_moto_mock.start()
+
+# Create S3 bucket and upload test certificates BEFORE app imports
+_s3 = boto3.client("s3", region_name="eu-south-1")
+_s3.create_bucket(
+    Bucket="test-bucket",
+    CreateBucketConfiguration={"LocationConstraint": "eu-south-1"}
+)
+# Upload minimal test certificates
+_s3.put_object(Bucket="test-bucket", Key="certs/test_cert.pem", Body=b"test-cert")
+_s3.put_object(Bucket="test-bucket", Key="certs/test_key.pem", Body=b"test-key")
+_s3.put_object(Bucket="test-bucket", Key="certs/test_ca.pem", Body=b"test-ca")
+
 from app.config import Settings
 from app.models.schemas import SignatureResponse
 
