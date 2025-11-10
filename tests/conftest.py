@@ -22,6 +22,11 @@ os.environ.setdefault("AWS_REGION", "eu-south-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
+# CRITICAL: Remove AWS_ENDPOINT_URL if it exists
+# Tests use in-memory moto mocks, NOT a moto server
+if "AWS_ENDPOINT_URL" in os.environ:
+    del os.environ["AWS_ENDPOINT_URL"]
+
 # Start moto mock BEFORE importing any app modules
 # This prevents SignatureService from trying to download real S3 files during import
 _moto_mock = mock_aws()
