@@ -7,8 +7,8 @@ moto[server,s3,dynamodb]==5.0.0
 # Flask - For mock InfoCert API server
 Flask==3.0.0
 
-# Requests - For testing HTTP endpoints
-requests==2.31.0
+# Requests - For testing HTTP endpoints (updated to avoid conflicts with langchain)
+requests>=2.32.5
 
 # Werkzeug - WSGI utility (for Flask/moto servers)
 Werkzeug==3.0.1
