@@ -8,6 +8,9 @@ Uses the moto library to emulate S3 and DynamoDB.
 Usage:
     python tests/run_moto_server.py
 
+    Or use moto command directly:
+    moto_server -p 5000
+
 Requirements:
     pip install moto[server,s3,dynamodb]
 
@@ -23,7 +26,7 @@ Environment:
 """
 
 import sys
-from moto.server import ThreadedMotoServer
+import subprocess
 
 
 def main():
@@ -56,19 +59,24 @@ def main():
     print()
 
     try:
-        # Create and start the server
-        # This runs S3 and DynamoDB on the same port
-        server = ThreadedMotoServer(
-            host="0.0.0.0",
-            port=5000,
-            verbose=True
-        )
-
-        server.run()
+        # Run moto_server command
+        # This is the recommended way to run moto standalone server
+        subprocess.run([
+            "moto_server",
+            "-p", "5000",
+            "-H", "0.0.0.0"
+        ], check=True)
 
     except KeyboardInterrupt:
         print("\n\n[MOTO] Server stopped by user")
         sys.exit(0)
+    except FileNotFoundError:
+        print("\n[MOTO] Error: moto_server command not found")
+        print("\nPlease install moto with server support:")
+        print("  pip install 'moto[server,s3,dynamodb]'")
+        print("\nOr run directly:")
+        print("  moto_server -p 5000 -H 0.0.0.0")
+        sys.exit(1)
     except Exception as e:
         print(f"\n[MOTO] Error starting server: {e}")
         sys.exit(1)
