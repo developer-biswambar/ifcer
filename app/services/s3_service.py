@@ -17,11 +17,29 @@ class S3Service:
     def __init__(self):
         """Initialize S3 client with configuration."""
         try:
+            # Prepare boto3 client configuration
+            client_config = {
+                "region_name": settings.aws_region
+            }
+
+            # Add endpoint_url for moto/LocalStack testing
+            if settings.aws_endpoint_url:
+                client_config["endpoint_url"] = settings.aws_endpoint_url
+                logger.info(f"Using custom AWS endpoint: {settings.aws_endpoint_url}")
+
+            # Add explicit credentials if provided (for moto/LocalStack)
+            if settings.aws_access_key_id and settings.aws_secret_access_key:
+                client_config["aws_access_key_id"] = settings.aws_access_key_id
+                client_config["aws_secret_access_key"] = settings.aws_secret_access_key
+                logger.debug("Using explicit AWS credentials from configuration")
+
             # Create S3 client - uses IAM role credentials automatically in ECS
-            self.s3_client = boto3.client("s3", region_name=settings.aws_region)
+            # unless explicit credentials are provided
+            self.s3_client = boto3.client("s3", **client_config)
             self.bucket_name = settings.s3_bucket_name
 
-            logger.info(f"S3 client initialized for bucket: {self.bucket_name} in region: {settings.aws_region}")
+            endpoint_info = f" | Endpoint: {settings.aws_endpoint_url}" if settings.aws_endpoint_url else ""
+            logger.info(f"S3 client initialized for bucket: {self.bucket_name} in region: {settings.aws_region}{endpoint_info}")
 
         except Exception as e:
             log_exception(logger, e, "Failed to initialize S3 client")

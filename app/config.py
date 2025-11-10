@@ -43,11 +43,15 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ==================== AWS Settings ====================
-    # Loaded from: AWS_REGION, S3_BUCKET_NAME
+    # Loaded from: AWS_REGION, S3_BUCKET_NAME, AWS_ENDPOINT_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
     # Note: AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) are
-    # automatically provided by IAM role in ECS. Do not configure them.
+    # automatically provided by IAM role in ECS. For local testing with moto,
+    # set AWS_ENDPOINT_URL=http://localhost:5000 and use test credentials.
     aws_region: str = "eu-south-1"  # Italy region
     s3_bucket_name: str  # REQUIRED - No default
+    aws_endpoint_url: Optional[str] = None  # For moto/LocalStack testing (e.g., http://localhost:5000)
+    aws_access_key_id: Optional[str] = None  # For local testing (use 'test' with moto)
+    aws_secret_access_key: Optional[str] = None  # For local testing (use 'test' with moto)
 
     # ==================== DynamoDB Settings ====================
     # Loaded from: DYNAMODB_TABLE_NAME, DYNAMODB_TTL_DAYS

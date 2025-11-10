@@ -18,12 +18,30 @@ class DynamoDBService:
     def __init__(self):
         """Initialize DynamoDB client with configuration."""
         try:
+            # Prepare boto3 resource configuration
+            resource_config = {
+                "region_name": settings.aws_region
+            }
+
+            # Add endpoint_url for moto/LocalStack testing
+            if settings.aws_endpoint_url:
+                resource_config["endpoint_url"] = settings.aws_endpoint_url
+                logger.info(f"Using custom AWS endpoint: {settings.aws_endpoint_url}")
+
+            # Add explicit credentials if provided (for moto/LocalStack)
+            if settings.aws_access_key_id and settings.aws_secret_access_key:
+                resource_config["aws_access_key_id"] = settings.aws_access_key_id
+                resource_config["aws_secret_access_key"] = settings.aws_secret_access_key
+                logger.debug("Using explicit AWS credentials from configuration")
+
             # Create DynamoDB resource - uses IAM role credentials automatically in ECS
-            self.dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
+            # unless explicit credentials are provided
+            self.dynamodb = boto3.resource("dynamodb", **resource_config)
             self.table_name = settings.dynamodb_table_name
             self.table = self.dynamodb.Table(self.table_name)
 
-            logger.info(f"DynamoDB service initialized for table: {self.table_name} in region: {settings.aws_region}")
+            endpoint_info = f" | Endpoint: {settings.aws_endpoint_url}" if settings.aws_endpoint_url else ""
+            logger.info(f"DynamoDB service initialized for table: {self.table_name} in region: {settings.aws_region}{endpoint_info}")
 
         except Exception as e:
             log_exception(logger, e, "Failed to initialize DynamoDB service")

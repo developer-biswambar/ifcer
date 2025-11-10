@@ -1,0 +1,14 @@
+# Testing Dependencies for IFCER
+# These are additional dependencies for local testing without Docker
+
+# Moto - Mock AWS services (S3, DynamoDB) without Docker
+moto[server,s3,dynamodb]==5.0.0
+
+# Flask - For mock InfoCert API server
+Flask==3.0.0
+
+# Requests - For testing HTTP endpoints
+requests==2.31.0
+
+# Werkzeug - WSGI utility (for Flask/moto servers)
+Werkzeug==3.0.1
