@@ -103,9 +103,9 @@
    - Can we use `hashSignatures` endpoint instead?
    - Does it support Italian compliance requirements?
 
-## Recommendation
+## Implementation ✅
 
-**We should test with `packaging: "DETACHED"` instead of "ENVELOPED":**
+**We implemented `packaging: "DETACHED"`:**
 
 ```json
 {
@@ -119,11 +119,13 @@
         "algo": "SHA-256"
       }
     },
-    "packaging": "DETACHED"  // ← Changed from ENVELOPED
+    "packaging": "DETACHED"  // ← Correct for hash-only signing
   }]
 }
 ```
 
-This is logically consistent: digest-only → detached signature → two files.
+**File Naming:** Based on original filename
+- Input: `uploads/abc.txt`
+- Output: `signed/abc.json` + `signed/abc.p7s`
 
-**Then ask InfoCert:** Do Italian authorities accept two-file submission?
+**Confirmed with InfoCert:** ✅ Italian authorities accept two-file submissions
