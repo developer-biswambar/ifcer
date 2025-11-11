@@ -43,7 +43,7 @@ class SignatureService:
     def __init__(self):
         """Initialize signature service with mTLS configuration loaded from S3."""
         # InfoCert uses TWO separate APIs:
-        # 1. mTLS API: For authentication and health checks
+        # 1. mTLS API: For authentication (Note: No health check endpoint)
         # 2. Signing API: For actual signing operations
         self.mtls_api_url = settings.infocert_mtls_api_url
         self.signing_api_url = settings.infocert_signing_api_url
@@ -523,32 +523,3 @@ class SignatureService:
             log_exception(logger, e, "Failed to create P7M file from signature")
             raise ValueError(f"P7M creation failed: {str(e)}")
 
-    def health_check(self) -> bool:
-        """
-        Check if vendor API is accessible with mTLS authentication.
-
-        Returns:
-            True if API is accessible
-
-        Raises:
-            RequestException: If health check fails
-        """
-        try:
-            logger.info("Performing InfoCert mTLS API health check")
-
-            session = self._create_session()
-
-            # Health check uses the mTLS API (not the signing API)
-            response = session.get(
-                f"{self.mtls_api_url}/health",
-                timeout=self.timeout,
-            )
-
-            response.raise_for_status()
-
-            logger.info("InfoCert mTLS API health check successful")
-            return True
-
-        except Exception as e:
-            log_exception(logger, e, "Vendor API health check failed")
-            raise

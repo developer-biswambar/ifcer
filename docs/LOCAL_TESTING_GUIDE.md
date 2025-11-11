@@ -84,7 +84,7 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 
 # ==================== InfoCert API (REAL - Dual API Setup) ====================
 # InfoCert uses TWO separate APIs:
-# 1. mTLS API: For authentication and health checks
+# 1. mTLS API: For authentication (Note: No health check endpoint available)
 # 2. Signing API: For actual signing operations
 #
 # ENVIRONMENTS:
@@ -263,7 +263,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 🏥 Test 1: Health Check
 
-**What it does:** Verifies service is running and can connect to S3 and InfoCert API.
+**What it does:** Verifies service is running and can connect to S3.
+
+**Note:** InfoCert does not provide a health check endpoint, so only S3 connectivity is verified.
 
 ```bash
 # Basic health check
@@ -281,7 +283,7 @@ curl -X GET http://localhost:8000/health \
 
 **If health check fails:**
 - Check S3 bucket access
-- Check InfoCert API connectivity
+- Check AWS credentials are configured correctly
 - Check logs in the uvicorn terminal
 
 ---

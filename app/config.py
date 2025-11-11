@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     #              VENDOR_MTLS_P12_S3_KEY, VENDOR_MTLS_P12_PASSWORD (or PEM files)
     #
     # InfoCert uses TWO separate APIs:
-    # 1. mTLS API: For authentication and obtaining tokens
+    # 1. mTLS API: For authentication (Note: No health check endpoint available)
     # 2. Signing API: For actual signing operations
     #
     # Certificates are stored in S3 and loaded during application startup

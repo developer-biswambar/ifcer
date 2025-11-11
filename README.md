@@ -82,7 +82,7 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 
 # InfoCert API Configuration (Dual API Setup)
 # InfoCert uses TWO separate APIs:
-# 1. mTLS API: For authentication and health checks
+# 1. mTLS API: For authentication (Note: No health check endpoint available)
 # 2. Signing API: For actual signing operations
 #
 # Certificates are stored in S3 and loaded during application startup
@@ -238,7 +238,9 @@ The API is organized into two main groups:
 GET /health
 ```
 
-Checks connectivity to S3 and vendor API.
+Checks connectivity to S3.
+
+**Note:** InfoCert does not provide a health check endpoint, so only S3 connectivity is verified.
 
 **Response:**
 ```json
@@ -1016,7 +1018,7 @@ VENDOR_MTLS_P12_PASSWORD=your-p12-password
 ```
 
 The service automatically:
-- Uses two separate APIs: mTLS API for authentication/health, Signing API for signing operations
+- Uses two separate APIs: mTLS API for authentication, Signing API for signing operations
 - Loads mTLS certificates from S3 during startup (P12 or PEM format)
 - Extracts certificate and key from P12 if using P12 format
 - Creates manifest JSON from file metadata and hash

@@ -36,7 +36,9 @@ router = APIRouter()
 async def health_check():
     """
     Health check endpoint.
-    Verifies connectivity to S3 and vendor API.
+    Verifies connectivity to S3.
+
+    Note: InfoCert does not provide a health check endpoint, so we only verify S3 access.
     """
     start_time = datetime.now(timezone.utc)
     try:
@@ -47,16 +49,11 @@ async def health_check():
         s3_accessible = s3_service.check_bucket_access()
         logger.info(f"[HEALTH CHECK] S3 bucket access: {'✓ OK' if s3_accessible else '✗ FAILED'}")
 
-        # Check vendor API access
-        logger.debug("[HEALTH CHECK] Checking vendor API access...")
-        vendor_accessible = signature_service.health_check()
-        logger.info(f"[HEALTH CHECK] Vendor API access: {'✓ OK' if vendor_accessible else '✗ FAILED'}")
-
-        if not s3_accessible or not vendor_accessible:
-            logger.error("[HEALTH CHECK] ✗ Health check FAILED - service dependencies not accessible")
+        if not s3_accessible:
+            logger.error("[HEALTH CHECK] ✗ Health check FAILED - S3 bucket not accessible")
             raise HTTPException(
                 status_code=503,
-                detail="Service dependencies are not accessible",
+                detail="S3 bucket is not accessible",
             )
 
         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
