@@ -80,23 +80,16 @@ AWS_REGION=eu-south-1
 S3_BUCKET_NAME=your-bucket-name
 DYNAMODB_TABLE_NAME=ifcer-certifications
 
-# InfoCert API Configuration (Dual API Setup)
-# InfoCert uses TWO separate APIs:
-# 1. mTLS API: For authentication (Note: No health check endpoint available)
-# 2. Signing API: For actual signing operations
-#
+# InfoCert API Configuration
+# InfoCert uses a single mTLS API endpoint for all operations
 # Certificates are stored in S3 and loaded during application startup
 #
-# InfoCert Environments:
-#   mTLS API:
-#     STAGE:      https://mtlsapistage.infocert.digital/signature/v1
-#     PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
-#   Signing API:
-#     STAGE:      https://apistage.infocert.digital/signature/v1
-#     PRODUCTION: https://api.infocert.digital/signature/v1
+# ENVIRONMENTS:
+#   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+#   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
 #
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+# Signing endpoint: /multi/sign
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
 INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header (e.g., MA0001)
 
 # Option 1: P12 Certificate (recommended)
@@ -182,8 +175,7 @@ docker run -d \
   -e AWS_REGION=eu-south-1 \
   -e S3_BUCKET_NAME=your-bucket-name \
   -e DYNAMODB_TABLE_NAME=ifcer-certifications \
-  -e INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1 \
-  -e INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1 \
+  -e INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1 \
   -e INFOCERT_CREDENTIAL_ID=your-credential-id \
   -e VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12 \
   -e VENDOR_MTLS_P12_PASSWORD=your-p12-password \
@@ -213,8 +205,7 @@ services:
       - AWS_REGION=${AWS_REGION:-eu-south-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME}
       - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-ifcer-certifications}
-      - INFOCERT_MTLS_API_URL=${INFOCERT_MTLS_API_URL:-https://mtlsapistage.infocert.digital/signature/v1}
-      - INFOCERT_SIGNING_API_URL=${INFOCERT_SIGNING_API_URL:-https://apistage.infocert.digital/signature/v1}
+      - INFOCERT_API_URL=${INFOCERT_API_URL:-https://mtlsapistage.infocert.digital/signature/v1}
       - INFOCERT_CREDENTIAL_ID=${INFOCERT_CREDENTIAL_ID}
       - VENDOR_MTLS_P12_S3_KEY=${VENDOR_MTLS_P12_S3_KEY:-certs/client_cert.p12}
       - VENDOR_MTLS_P12_PASSWORD=${VENDOR_MTLS_P12_PASSWORD}
@@ -785,8 +776,7 @@ The ECS task role needs these permissions:
         {"name": "AWS_REGION", "value": "eu-south-1"},
         {"name": "S3_BUCKET_NAME", "value": "your-bucket-name"},
         {"name": "DYNAMODB_TABLE_NAME", "value": "ifcer-certifications"},
-        {"name": "INFOCERT_MTLS_API_URL", "value": "https://mtlsapistage.infocert.digital/signature/v1"},
-        {"name": "INFOCERT_SIGNING_API_URL", "value": "https://apistage.infocert.digital/signature/v1"},
+        {"name": "INFOCERT_API_URL", "value": "https://mtlsapistage.infocert.digital/signature/v1"},
         {"name": "INFOCERT_CREDENTIAL_ID", "value": "your-credential-id"},
         {"name": "VENDOR_MTLS_P12_S3_KEY", "value": "certs/client_cert.p12"},
         {"name": "VENDOR_MTLS_P12_PASSWORD", "value": "your-p12-password"}
@@ -999,11 +989,12 @@ To verify the file hasn't been tampered with:
 Required environment variables:
 
 ```bash
-# InfoCert API (Dual API Setup)
-# mTLS API for authentication (STAGE for testing, PRODUCTION for live)
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-# Signing API for signing operations
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+# InfoCert API
+# Single mTLS API endpoint for all operations (authentication, signing, etc.)
+# STAGE for testing, PRODUCTION for live
+# Signing endpoint: /multi/sign
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+
 # Credential ID
 INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header
 

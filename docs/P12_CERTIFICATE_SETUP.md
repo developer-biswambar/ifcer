@@ -38,8 +38,8 @@ aws s3 cp ~/Downloads/infocert_cert.p12 s3://YOUR-BUCKET/certs/client_cert.p12
 
 # 2. Update .env
 cat >> .env << EOF
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+
 INFOCERT_CREDENTIAL_ID=your-credential-id
 VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
 VENDOR_MTLS_P12_PASSWORD=your-p12-password
@@ -104,8 +104,8 @@ aws s3 cp certs/ca_bundle.pem s3://YOUR-BUCKET/certs/  # If exists
 
 # 3. Update .env (comment out P12 settings if present)
 cat >> .env << EOF
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+
 INFOCERT_CREDENTIAL_ID=your-credential-id
 VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
 VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
@@ -252,13 +252,13 @@ Choose **ONE** of the following configurations:
 # S3 Bucket
 S3_BUCKET_NAME=your-ifcer-bucket
 
-# InfoCert API (Dual API Setup)
-# mTLS API - STAGE:      https://mtlsapistage.infocert.digital/signature/v1
-# mTLS API - PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
-# Signing API - STAGE:      https://apistage.infocert.digital/signature/v1
-# Signing API - PRODUCTION: https://api.infocert.digital/signature/v1
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+# InfoCert API
+# InfoCert uses a single mTLS API endpoint for all operations (authentication, signing, etc.)
+# STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+# PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+# Signing endpoint: /multi/sign
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+
 INFOCERT_CREDENTIAL_ID=your-credential-id
 
 # P12 Certificate (direct usage)
@@ -272,9 +272,9 @@ VENDOR_MTLS_P12_PASSWORD=your-p12-password
 # S3 Bucket
 S3_BUCKET_NAME=your-ifcer-bucket
 
-# InfoCert API (Dual API Setup)
-INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
-INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+# InfoCert API
+INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+
 INFOCERT_CREDENTIAL_ID=your-credential-id
 
 # PEM Certificates (extracted from P12)
