@@ -6,13 +6,19 @@ compliant with Italian eIDAS and AgID standards. The workflow:
 1. Compute SHA-256 hash of the original document
 2. Create a manifest JSON file containing: fileName, hash, algorithm, timestamp
 3. Compute SHA-256 hash of the manifest
-4. Send manifest hash to InfoCert Sign API with mTLS authentication (CAdES with digest)
+4. Send manifest hash to InfoCert Sign API with mTLS authentication (CAdES DETACHED)
 5. InfoCert signs the manifest hash using qualified certificates
-6. InfoCert returns a complete CAdES-BASELINE-B P7M signature file
-7. Store original file + signed manifest P7M for Italian register submission
+6. InfoCert returns a DETACHED CAdES-BASELINE-B signature file (.p7s)
+7. Store TWO files for Italian register submission:
+   - manifest.json (original manifest)
+   - manifest.p7s (detached CAdES signature)
 
-The P7M file contains the SIGNED MANIFEST HASH (not the original file or manifest content).
-The manifest's hash field proves the integrity of the original file.
+The .p7s file contains the DETACHED SIGNATURE of the manifest hash.
+Verification requires both files: authorities compute hash of manifest.json
+and verify it against the signature in manifest.p7s.
+
+Note: DETACHED packaging is used because we only send the hash to InfoCert
+(not the full manifest content), which is required for compliance.
 
 Reference: https://developers.infocert.digital/e-signature-and-e-sealing/
 """
@@ -244,20 +250,25 @@ class SignatureService:
         """
         Create and sign a manifest file containing the file hash using InfoCert API.
 
-        This implements the manifest-based approach where:
+        This implements the manifest-based approach with DETACHED signature where:
         1. Create a manifest JSON containing file hash and metadata
-        2. Base64 encode the manifest
-        3. Send manifest to InfoCert for CAdES signing
-        4. Receive signed P7M of the manifest (not the original file)
+        2. Compute SHA-256 hash of the manifest
+        3. Send manifest HASH ONLY to InfoCert for CAdES DETACHED signing
+        4. Receive detached CAdES signature (.p7s) - separate from manifest content
 
-        The original file stays unchanged. The P7M contains the signed manifest,
-        which proves the integrity of the original file through its hash.
+        The original file stays unchanged. The .p7s file contains the DETACHED signature
+        of the manifest hash. Verification requires TWO files:
+        - manifest.json (original manifest)
+        - manifest.p7s (detached signature)
+
+        DETACHED packaging is used because we only send the hash (not content) to InfoCert,
+        which is required for compliance reasons.
 
         Args:
             signature_request: SignatureRequest object with file hash details
 
         Returns:
-            SignatureResponse with signed manifest (P7M) and timestamp
+            SignatureResponse with detached signature (.p7s) and timestamp
 
         Raises:
             RequestException: If API request fails
@@ -317,16 +328,17 @@ class SignatureService:
                             "algo": "SHA-256"
                         }
                     },
-                    "packaging": "ENVELOPED"
+                    "packaging": "DETACHED"  # DETACHED for hash-only signing (separate .p7s file)
                 }]
             }
 
             # Build endpoint URL with certificate ID
             endpoint_url = f"{self.api_url}/certificates/{certificate_id}/sign"
 
-            logger.info(f"[STEP 4/5] Sending manifest hash to InfoCert API for CAdES signing...")
+            logger.info(f"[STEP 4/5] Sending manifest hash to InfoCert API for CAdES DETACHED signing...")
             logger.debug(f"[STEP 4/5] API URL: {endpoint_url}")
             logger.debug(f"[STEP 4/5] Certificate ID: {certificate_id}")
+            logger.debug(f"[STEP 4/5] Packaging: DETACHED (separate .p7s file)")
             logger.debug(f"[STEP 4/5] Request ID: manifest-{signature_request.filename}")
 
             # Make API request to InfoCert API with X-signer-id header
@@ -371,38 +383,38 @@ class SignatureService:
                 logger.error(f"[ERROR] InfoCert signature failed: {error_code} - {error_detail}")
                 raise ValueError(f"InfoCert signature failed: {error_code} - {error_detail}")
 
-            # Extract signed document (complete P7M file)
+            # Extract signed document (detached CAdES signature - .p7s file)
             signed_document = result.get("signedDocument", {})
-            p7m_content_b64 = signed_document.get("content", "")
+            p7s_content_b64 = signed_document.get("content", "")
             content_type = signed_document.get("contentType", "")
 
-            if not p7m_content_b64:
+            if not p7s_content_b64:
                 logger.error("[ERROR] InfoCert API did not return signedDocument.content")
                 raise ValueError("InfoCert API did not return signed document content")
 
             logger.info(
-                f"[STEP 4/5] Received complete P7M signature "
-                f"({len(p7m_content_b64)} chars, type: {content_type})"
+                f"[STEP 4/5] Received detached CAdES signature (.p7s) "
+                f"({len(p7s_content_b64)} chars, type: {content_type})"
             )
 
-            # Step 5: Decode the complete P7M file from base64
-            logger.debug(f"[STEP 5/5] Decoding complete P7M file from base64")
-            p7m_bytes = base64.b64decode(p7m_content_b64)
-            logger.info(f"[STEP 5/5] P7M file decoded: {len(p7m_bytes)} bytes")
+            # Step 5: Decode the detached signature (.p7s) from base64
+            logger.debug(f"[STEP 5/5] Decoding detached CAdES signature from base64")
+            p7s_bytes = base64.b64decode(p7s_content_b64)
+            logger.info(f"[STEP 5/5] Detached signature (.p7s) decoded: {len(p7s_bytes)} bytes")
 
             # Use current timestamp since InfoCert may not provide it in CAdES response
             signing_time = datetime.now(timezone.utc)
 
             signature_response = SignatureResponse(
-                signature=p7m_content_b64[:100],  # Store first 100 chars for reference
+                signature=p7s_content_b64[:100],  # Store first 100 chars for reference
                 timestamp=signing_time,
-                p7m_content=p7m_bytes,
+                p7m_content=p7s_bytes,  # Field name kept as p7m_content, but contains .p7s detached signature
             )
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(
                 f"[SIGN COMPLETE] File: {signature_request.filename} | "
-                f"P7M size: {len(p7m_bytes)} bytes | "
+                f"Signature size (.p7s): {len(p7s_bytes)} bytes | "
                 f"Duration: {elapsed:.2f}s | "
                 f"Timestamp: {signature_response.timestamp.isoformat()}"
             )
