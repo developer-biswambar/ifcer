@@ -20,8 +20,7 @@ class Settings(BaseSettings):
 
     Required environment variables (no defaults):
     - S3_BUCKET_NAME: S3 bucket for file storage
-    - INFOCERT_MTLS_API_URL: InfoCert mTLS API base URL (for authentication)
-    - INFOCERT_SIGNING_API_URL: InfoCert Signing API base URL (for signing operations)
+    - INFOCERT_API_URL: InfoCert mTLS API base URL
     - INFOCERT_CREDENTIAL_ID: InfoCert credential ID for signing
 
     Optional environment variables (with defaults):
@@ -61,27 +60,20 @@ class Settings(BaseSettings):
     dynamodb_table_name: str = "ifcer-certifications"
     dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
 
-    # ==================== InfoCert API Settings (Dual API) ====================
-    # Loaded from: INFOCERT_MTLS_API_URL, INFOCERT_SIGNING_API_URL, INFOCERT_CREDENTIAL_ID,
+    # ==================== InfoCert API Settings ====================
+    # Loaded from: INFOCERT_API_URL, INFOCERT_CREDENTIAL_ID,
     #              VENDOR_MTLS_P12_S3_KEY, VENDOR_MTLS_P12_PASSWORD (or PEM files)
     #
-    # InfoCert uses TWO separate APIs:
-    # 1. mTLS API: For authentication (Note: No health check endpoint available)
-    # 2. Signing API: For actual signing operations
-    #
+    # InfoCert uses a single mTLS API endpoint for all operations (authentication, signing, etc.)
     # Certificates are stored in S3 and loaded during application startup
     #
     # ENVIRONMENTS:
-    #   mTLS API:
-    #     STAGE:      https://mtlsapistage.infocert.digital/signature/v1
-    #     PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+    #   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+    #   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
     #
-    #   Signing API:
-    #     STAGE:      https://apistage.infocert.digital/signature/v1
-    #     PRODUCTION: https://api.infocert.digital/signature/v1
+    # Signing endpoint: /multi/sign
     #
-    infocert_mtls_api_url: str  # REQUIRED - InfoCert mTLS API for authentication
-    infocert_signing_api_url: str  # REQUIRED - InfoCert Signing API for signing operations
+    infocert_api_url: str  # REQUIRED - InfoCert mTLS API base URL
     infocert_credential_id: str  # REQUIRED - InfoCert credential ID (X-signer-id header, e.g., MA0001)
 
     # OPTION 1: P12 certificate (recommended - simpler setup)

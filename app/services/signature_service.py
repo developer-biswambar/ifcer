@@ -42,17 +42,13 @@ class SignatureService:
 
     def __init__(self):
         """Initialize signature service with mTLS configuration loaded from S3."""
-        # InfoCert uses TWO separate APIs:
-        # 1. mTLS API: For authentication (Note: No health check endpoint)
-        # 2. Signing API: For actual signing operations
-        self.mtls_api_url = settings.infocert_mtls_api_url
-        self.signing_api_url = settings.infocert_signing_api_url
+        # InfoCert uses a single mTLS API endpoint for all operations
+        self.api_url = settings.infocert_api_url
         self.timeout = settings.request_timeout
 
         # Download mTLS certificates from S3 and store as temporary files
         logger.info(f"Loading mTLS certificates from S3 bucket: {settings.s3_bucket_name}")
-        logger.info(f"mTLS API: {self.mtls_api_url}")
-        logger.info(f"Signing API: {self.signing_api_url}")
+        logger.info(f"InfoCert API: {self.api_url}")
 
         try:
             # Prepare boto3 client configuration
@@ -314,12 +310,12 @@ class SignatureService:
                     }]
                 }
             }
-            logger.info(f"[STEP 4/5] Sending manifest to InfoCert Signing API for signing...")
-            logger.debug(f"[STEP 4/5] Signing API URL: {self.signing_api_url}/sign/v2")
+            logger.info(f"[STEP 4/5] Sending manifest to InfoCert API for signing...")
+            logger.debug(f"[STEP 4/5] API URL: {self.api_url}/multi/sign")
 
-            # Make API request to InfoCert Signing API
+            # Make API request to InfoCert API
             response = session.post(
-                f"{self.signing_api_url}/sign/v2",
+                f"{self.api_url}/multi/sign",
                 json=payload,
                 timeout=self.timeout,
             )
