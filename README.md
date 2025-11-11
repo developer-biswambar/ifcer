@@ -66,7 +66,7 @@ ifcer/
 - Python 3.11+
 - Docker (for containerization)
 - AWS Account with S3 and DynamoDB access
-- Vendor mTLS certificates stored in S3 (cert, key, CA bundle)
+- InfoCert mTLS certificate (P12 file) or extracted PEM files stored in S3
 
 ## Configuration
 
@@ -83,11 +83,21 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 # InfoCert API Configuration (mTLS)
 # InfoCert's Manifest-Based Hash Signature API
 # Certificates are stored in S3 and loaded during application startup
-VENDOR_API_URL=https://sign.infocert.it/api/v1
-INFOCERT_CREDENTIAL_ID=your-infocert-credential-id
-VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
-VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
-VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
+#
+# InfoCert Environments:
+#   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+#   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header (e.g., MA0001)
+
+# Option 1: P12 Certificate (recommended)
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+
+# Option 2: PEM Certificates (if already extracted)
+# VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+# VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+# VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 ```
 
 ### Optional Environment Variables
@@ -163,10 +173,10 @@ docker run -d \
   -e AWS_REGION=eu-south-1 \
   -e S3_BUCKET_NAME=your-bucket-name \
   -e DYNAMODB_TABLE_NAME=ifcer-certifications \
-  -e VENDOR_API_URL=https://sign.infocert.it/api/v1 \
-  -e VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem \
-  -e VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem \
-  -e VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem \
+  -e VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1 \
+  -e INFOCERT_CREDENTIAL_ID=your-credential-id \
+  -e VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12 \
+  -e VENDOR_MTLS_P12_PASSWORD=your-p12-password \
   ifcer-service:latest
 ```
 
@@ -193,10 +203,10 @@ services:
       - AWS_REGION=${AWS_REGION:-eu-south-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME}
       - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-ifcer-certifications}
-      - VENDOR_API_URL=${VENDOR_API_URL:-https://sign.infocert.it/api/v1}
-      - VENDOR_MTLS_CERT_S3_KEY=${VENDOR_MTLS_CERT_S3_KEY:-certs/client_cert.pem}
-      - VENDOR_MTLS_KEY_S3_KEY=${VENDOR_MTLS_KEY_S3_KEY:-certs/client_key.pem}
-      - VENDOR_MTLS_CA_S3_KEY=${VENDOR_MTLS_CA_S3_KEY:-certs/ca_bundle.pem}
+      - VENDOR_API_URL=${VENDOR_API_URL:-https://mtlsapistage.infocert.digital/signature/v1}
+      - INFOCERT_CREDENTIAL_ID=${INFOCERT_CREDENTIAL_ID}
+      - VENDOR_MTLS_P12_S3_KEY=${VENDOR_MTLS_P12_S3_KEY:-certs/client_cert.p12}
+      - VENDOR_MTLS_P12_PASSWORD=${VENDOR_MTLS_P12_PASSWORD}
     restart: unless-stopped
 ```
 
@@ -488,35 +498,55 @@ This structure makes it easy to:
 
 ## mTLS Certificate Setup
 
-The vendor API requires mutual TLS (mTLS) authentication. The service loads certificates from S3 during startup.
+InfoCert API requires mutual TLS (mTLS) authentication. The service supports **two certificate formats**:
 
-### Required Certificates
+### Option 1: P12 Certificate (Recommended - Simpler Setup)
 
-1. **Client Certificate** (`client_cert.pem`): Your certificate for authentication
-2. **Client Private Key** (`client_key.pem`): Private key for your certificate
-3. **CA Bundle** (`ca_bundle.pem`): Certificate authority bundle to verify vendor's certificate
+**What you need:**
+- P12 certificate file from InfoCert
+- P12 password
 
-### Uploading Certificates to S3
-
-Upload your mTLS certificates to the `certs/` folder in your S3 bucket:
-
+**Upload to S3:**
 ```bash
-# Upload client certificate
-aws s3 cp client_cert.pem s3://your-bucket-name/certs/client_cert.pem
+aws s3 cp your_cert.p12 s3://your-bucket-name/certs/client_cert.p12
+```
 
-# Upload client private key
-aws s3 cp client_key.pem s3://your-bucket-name/certs/client_key.pem
+**Configuration:**
+```bash
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+```
 
-# Upload CA bundle
-aws s3 cp ca_bundle.pem s3://your-bucket-name/certs/ca_bundle.pem
+### Option 2: PEM Certificates (Legacy)
+
+If you need to extract PEM files from P12, see `docs/P12_CERTIFICATE_SETUP.md`.
+
+**Required files:**
+1. **Client Certificate** (`client_cert.pem`)
+2. **Client Private Key** (`client_key.pem`)
+3. **CA Bundle** (`ca_bundle.pem`) - optional
+
+**Upload to S3:**
+```bash
+aws s3 cp client_cert.pem s3://your-bucket-name/certs/
+aws s3 cp client_key.pem s3://your-bucket-name/certs/
+aws s3 cp ca_bundle.pem s3://your-bucket-name/certs/  # optional
+```
+
+**Configuration:**
+```bash
+VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem  # optional
 ```
 
 ### Certificate Loading Process
 
 When the application starts:
-1. Downloads certificates from S3 using the configured S3 keys
-2. Writes them to temporary files with secure permissions (read-only, 0o400)
-3. Uses these temporary files for mTLS authentication with the vendor API
+1. Downloads P12 or PEM certificates from S3 using the configured S3 keys
+2. If P12: automatically extracts certificate, private key, and CA certificates in memory
+3. Writes them to temporary files with secure permissions (read-only, 0o400)
+4. Uses these temporary files for mTLS authentication with InfoCert API
 
 ### S3 Bucket Security
 
@@ -559,8 +589,13 @@ The ECS task role needs S3 read permissions for the certificates:
 
 ### Custom Certificate Paths
 
-To use different S3 keys for your certificates, set these environment variables:
+**For P12:**
+```bash
+VENDOR_MTLS_P12_S3_KEY=custom/path/your_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-password
+```
 
+**For PEM:**
 ```bash
 VENDOR_MTLS_CERT_S3_KEY=custom/path/client_cert.pem
 VENDOR_MTLS_KEY_S3_KEY=custom/path/client_key.pem
@@ -737,10 +772,10 @@ The ECS task role needs these permissions:
         {"name": "AWS_REGION", "value": "eu-south-1"},
         {"name": "S3_BUCKET_NAME", "value": "your-bucket-name"},
         {"name": "DYNAMODB_TABLE_NAME", "value": "ifcer-certifications"},
-        {"name": "VENDOR_API_URL", "value": "https://sign.infocert.it/api/v1"},
-        {"name": "VENDOR_MTLS_CERT_S3_KEY", "value": "certs/client_cert.pem"},
-        {"name": "VENDOR_MTLS_KEY_S3_KEY", "value": "certs/client_key.pem"},
-        {"name": "VENDOR_MTLS_CA_S3_KEY", "value": "certs/ca_bundle.pem"}
+        {"name": "VENDOR_API_URL", "value": "https://mtlsapistage.infocert.digital/signature/v1"},
+        {"name": "INFOCERT_CREDENTIAL_ID", "value": "your-credential-id"},
+        {"name": "VENDOR_MTLS_P12_S3_KEY", "value": "certs/client_cert.p12"},
+        {"name": "VENDOR_MTLS_P12_PASSWORD", "value": "your-p12-password"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
@@ -950,15 +985,23 @@ To verify the file hasn't been tampered with:
 Required environment variables:
 
 ```bash
-VENDOR_API_URL=https://sign.infocert.it/api/v1
-INFOCERT_CREDENTIAL_ID=your-infocert-credential-id
-VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
-VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
-VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
+# InfoCert API (STAGE for testing, PRODUCTION for live)
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header
+
+# Option 1: P12 Certificate (recommended)
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+
+# Option 2: PEM Certificates (legacy)
+# VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+# VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+# VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 ```
 
 The service automatically:
-- Loads mTLS certificates from S3 during startup
+- Loads mTLS certificates from S3 during startup (P12 or PEM format)
+- Extracts certificate and key from P12 if using P12 format
 - Creates manifest JSON from file metadata and hash
 - Handles base64 encoding/decoding
 - Validates P7M file structure (PKCS#7 format)

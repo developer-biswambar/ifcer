@@ -1,36 +1,76 @@
 # P12 Certificate Setup for InfoCert mTLS Authentication
 
-This guide explains how to convert your P12 certificate from InfoCert to PEM format and configure it for the IFCER Batch Service.
+This guide explains how to use your P12 certificate from InfoCert for mTLS authentication with the IFCER Batch Service.
+
+> **📌 IMPORTANT UPDATE:** As of the latest version, the IFCER service **supports P12 files directly**! You can upload your P12 file to S3 and use it with a password - **no conversion required**.
+>
+> **Extraction to PEM is now OPTIONAL** and only needed if you prefer PEM format or have specific requirements.
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Step-by-Step Guide](#step-by-step-guide)
-- [Uploading to S3](#uploading-to-s3)
+- [Option 1: Use P12 Directly (Recommended)](#option-1-use-p12-directly-recommended)
+- [Option 2: Extract to PEM Format (Legacy)](#option-2-extract-to-pem-format-legacy)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Security Best Practices](#security-best-practices)
 
-## Overview
+---
 
-InfoCert provides P12 (PKCS#12) certificates for mTLS authentication. The IFCER service requires these certificates in PEM format stored in S3.
+## Option 1: Use P12 Directly (Recommended)
+
+**✅ Simplest approach - no conversion needed!**
+
+### Overview
+
+InfoCert provides P12 (PKCS#12) certificates for mTLS authentication. The IFCER service can now use these directly.
 
 **What you need:**
 - P12 certificate file from InfoCert (e.g., `infocert_cert.p12`)
 - P12 password
 - AWS S3 bucket for storing certificates
 
-**What you'll get:**
+### Quick Start with P12
+
+```bash
+# 1. Upload P12 to S3
+aws s3 cp ~/Downloads/infocert_cert.p12 s3://YOUR-BUCKET/certs/client_cert.p12
+
+# 2. Update .env
+cat >> .env << EOF
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+EOF
+
+# 3. Test
+python -c "from app.services.signature_service import SignatureService; s = SignatureService(); print('✓ P12 certificate loaded successfully!')"
+```
+
+**That's it!** The service will automatically extract the certificate and key from P12 at startup.
+
+---
+
+## Option 2: Extract to PEM Format (Legacy)
+
+**Use this option if:**
+- You need to inspect certificates manually
+- You have specific security requirements for key storage
+- You prefer traditional PEM format
+
+### Overview
+
+Convert P12 certificates to PEM format for manual management.
+
+**What you'll get after extraction:**
 - `client_cert.pem` - Your client certificate
 - `client_key.pem` - Your private key
 - `ca_bundle.pem` - CA certificates (optional)
 
-## Prerequisites
+### Prerequisites for PEM Extraction
 
-### Required Software
+**Required Software:**
 
 ```bash
 # macOS
@@ -44,14 +84,13 @@ openssl version  # Should show OpenSSL 1.1.1 or later
 aws --version    # Should show AWS CLI
 ```
 
-### Required Access
-
+**Required Access:**
 - P12 file from InfoCert
 - P12 password
 - AWS credentials with S3 access
 - S3 bucket created
 
-## Quick Start
+### Quick Start with PEM Extraction
 
 ```bash
 # 1. Extract PEM files from P12
@@ -62,18 +101,22 @@ aws s3 cp certs/client_cert.pem s3://YOUR-BUCKET/certs/
 aws s3 cp certs/client_key.pem s3://YOUR-BUCKET/certs/
 aws s3 cp certs/ca_bundle.pem s3://YOUR-BUCKET/certs/  # If exists
 
-# 3. Update .env
-echo "VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem" >> .env
-echo "VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem" >> .env
-echo "VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem" >> .env
+# 3. Update .env (comment out P12 settings if present)
+cat >> .env << EOF
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id
+VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
+EOF
 
 # 4. Test
-python -c "from app.services.signature_service import SignatureService; s = SignatureService(); print('✓ Certificates loaded successfully!')"
+python -c "from app.services.signature_service import SignatureService; s = SignatureService(); print('✓ PEM certificates loaded successfully!')"
 ```
 
-## Step-by-Step Guide
+### Step-by-Step PEM Extraction
 
-### Step 1: Extract PEM Files
+#### Step 1: Extract PEM Files
 
 We provide an automated script:
 
@@ -193,25 +236,48 @@ chmod +x upload_certs_to_s3.sh
 ./upload_certs_to_s3.sh your-bucket-name
 ```
 
+---
+
 ## Configuration
 
 ### Environment Variables
 
-Update your `.env` file:
+Choose **ONE** of the following configurations:
+
+#### Option A: P12 Configuration (Recommended)
 
 ```bash
 # S3 Bucket
 S3_BUCKET_NAME=your-ifcer-bucket
 
 # InfoCert API
-VENDOR_API_URL=https://api.infocert.it/sign/v1
-INFOCERT_CREDENTIAL_ID=your-credential-id-from-infocert
+# STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+# PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id
 
-# Certificate S3 keys (paths in the bucket)
+# P12 Certificate (direct usage)
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+```
+
+#### Option B: PEM Configuration (Legacy)
+
+```bash
+# S3 Bucket
+S3_BUCKET_NAME=your-ifcer-bucket
+
+# InfoCert API
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_CREDENTIAL_ID=your-credential-id
+
+# PEM Certificates (extracted from P12)
 VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
 VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
 VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 ```
+
+**Note:** If both P12 and PEM settings are provided, P12 takes precedence.
 
 ### Verify Configuration
 

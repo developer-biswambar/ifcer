@@ -29,8 +29,10 @@ class Settings(BaseSettings):
     - AWS_REGION: AWS region (default: "eu-south-1")
     - DYNAMODB_TABLE_NAME: DynamoDB table name (default: "ifcer-certifications")
     - DYNAMODB_TTL_DAYS: Record TTL in days (default: None)
-    - VENDOR_MTLS_CERT_S3_KEY: S3 key for client certificate (default: "certs/client_cert.pem")
-    - VENDOR_MTLS_KEY_S3_KEY: S3 key for client key (default: "certs/client_key.pem")
+    - VENDOR_MTLS_P12_S3_KEY: S3 key for P12 certificate (default: None)
+    - VENDOR_MTLS_P12_PASSWORD: Password for P12 file (default: None)
+    - VENDOR_MTLS_CERT_S3_KEY: S3 key for client certificate PEM (default: "certs/client_cert.pem")
+    - VENDOR_MTLS_KEY_S3_KEY: S3 key for client key PEM (default: "certs/client_key.pem")
     - VENDOR_MTLS_CA_S3_KEY: S3 key for CA bundle (default: "certs/ca_bundle.pem")
     - HASH_ALGORITHM: Hash algorithm (default: "sha256")
     - BATCH_SIZE: Batch processing size (default: 100)
@@ -60,13 +62,23 @@ class Settings(BaseSettings):
 
     # ==================== InfoCert API Settings (mTLS) ====================
     # Loaded from: VENDOR_API_URL, INFOCERT_CREDENTIAL_ID,
-    #              VENDOR_MTLS_CERT_S3_KEY, VENDOR_MTLS_KEY_S3_KEY, VENDOR_MTLS_CA_S3_KEY
+    #              VENDOR_MTLS_P12_S3_KEY, VENDOR_MTLS_P12_PASSWORD (or PEM files)
     # InfoCert's Manifest-Based Hash Signature API
     # Certificates are stored in S3 and loaded during application startup
-    vendor_api_url: str  # REQUIRED - InfoCert Sign API base URL (e.g., https://sign.infocert.it/api/v1)
-    infocert_credential_id: str  # REQUIRED - InfoCert credential ID for signing
-    vendor_mtls_cert_s3_key: str = "certs/client_cert.pem"
-    vendor_mtls_key_s3_key: str = "certs/client_key.pem"
+    #
+    # ENVIRONMENTS:
+    #   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+    #   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+    vendor_api_url: str  # REQUIRED - InfoCert Sign API base URL
+    infocert_credential_id: str  # REQUIRED - InfoCert credential ID (X-signer-id header, e.g., MA0001)
+
+    # OPTION 1: P12 certificate (recommended - simpler setup)
+    vendor_mtls_p12_s3_key: Optional[str] = None  # S3 key for P12 file (e.g., certs/client_cert.p12)
+    vendor_mtls_p12_password: Optional[str] = None  # Password for P12 file
+
+    # OPTION 2: PEM certificates (if P12 is not provided)
+    vendor_mtls_cert_s3_key: Optional[str] = "certs/client_cert.pem"
+    vendor_mtls_key_s3_key: Optional[str] = "certs/client_key.pem"
     vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
 
     # ==================== Processing Settings ====================

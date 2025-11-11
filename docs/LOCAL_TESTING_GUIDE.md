@@ -18,11 +18,13 @@ Step-by-step guide for testing the IFCER service locally with actual InfoCert AP
 
 ### ✅ What You Need
 
-- [x] P12 certificate extracted to PEM files
-- [x] PEM files uploaded to S3 (client_cert.pem, client_key.pem)
+- [x] P12 certificate from InfoCert
+- [x] P12 file uploaded to S3 (or PEM files if already extracted)
+- [x] P12 password
 - [x] S3 bucket created
 - [x] DynamoDB table created
-- [x] InfoCert API URL and Credential ID
+- [x] InfoCert API URL (STAGE or PRODUCTION)
+- [x] InfoCert Credential ID (X-signer-id)
 - [x] Test PDF/XML files to process
 
 ### 📋 Check Your Setup
@@ -30,10 +32,10 @@ Step-by-step guide for testing the IFCER service locally with actual InfoCert AP
 ```bash
 # 1. Verify S3 certificates exist
 aws s3 ls s3://YOUR-BUCKET/certs/
-# Should show:
-#   client_cert.pem
-#   client_key.pem
-#   ca_bundle.pem (optional)
+# Should show either:
+#   client_cert.p12 (P12 format - recommended)
+# OR:
+#   client_cert.pem, client_key.pem, ca_bundle.pem (PEM format)
 
 # 2. Verify DynamoDB table exists
 aws dynamodb describe-table --table-name ifcer-certifications
@@ -81,17 +83,28 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 # DYNAMODB_TTL_DAYS=365
 
 # ==================== InfoCert API (REAL) ====================
-# Your actual InfoCert API base URL (provided by InfoCert)
-# Example: https://sign.infocert.it/api/v1
-VENDOR_API_URL=https://YOUR-ACTUAL-INFOCERT-API-URL
+# InfoCert API environments:
+#   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+#   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+#
+# Use STAGE for testing, PRODUCTION for live operations
+VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
 
-# Your actual InfoCert Credential ID (provided by InfoCert)
+# Your InfoCert Credential ID (X-signer-id header, e.g., MA0001)
 INFOCERT_CREDENTIAL_ID=your-actual-credential-id
 
-# S3 keys where you uploaded the PEM files
-VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
-VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
-VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem  # Comment out if not needed
+# ==================== mTLS Certificate Configuration ====================
+# OPTION 1: Use P12 file directly (RECOMMENDED - simpler setup)
+# Upload your P12 file to S3:
+#   aws s3 cp your_cert.p12 s3://YOUR-BUCKET/certs/client_cert.p12
+VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+VENDOR_MTLS_P12_PASSWORD=your-p12-password
+
+# OPTION 2: Use PEM files (if you already extracted them)
+# Uncomment these if you're using PEM instead of P12:
+# VENDOR_MTLS_CERT_S3_KEY=certs/client_cert.pem
+# VENDOR_MTLS_KEY_S3_KEY=certs/client_key.pem
+# VENDOR_MTLS_CA_S3_KEY=certs/ca_bundle.pem
 
 # ==================== Processing Configuration ====================
 HASH_ALGORITHM=sha256
@@ -113,6 +126,37 @@ echo "Credential ID: $INFOCERT_CREDENTIAL_ID"
 
 # All should show your actual values (not "your-actual-...")
 ```
+
+---
+
+## Upload P12 Certificate to S3
+
+### Step 1: Upload Your P12 File
+
+```bash
+# Set your bucket name
+export S3_BUCKET=your-actual-bucket-name
+
+# Upload P12 certificate
+aws s3 cp /path/to/your_cert.p12 s3://$S3_BUCKET/certs/client_cert.p12
+
+# Verify upload
+aws s3 ls s3://$S3_BUCKET/certs/
+# Should show: client_cert.p12
+```
+
+### Step 2: Update .env with P12 Password
+
+```bash
+# Edit .env file
+nano .env
+
+# Ensure these are set:
+# VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12
+# VENDOR_MTLS_P12_PASSWORD=your-actual-p12-password
+```
+
+**Note:** If you prefer to use PEM files instead, see `docs/P12_CERTIFICATE_SETUP.md` for extraction instructions.
 
 ---
 

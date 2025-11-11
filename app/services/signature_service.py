@@ -27,6 +27,8 @@ import boto3
 import requests
 from asn1crypto import cms, core, algos, x509 as asn1_x509
 from requests.exceptions import RequestException, Timeout, SSLError
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
@@ -65,6 +67,74 @@ class SignatureService:
 
             s3_client = boto3.client("s3", **client_config)
 
+            # OPTION 1: Use P12 certificate (recommended)
+            if settings.vendor_mtls_p12_s3_key and settings.vendor_mtls_p12_password:
+                logger.info("Using P12 certificate for mTLS authentication")
+                self._load_p12_certificate(s3_client)
+            # OPTION 2: Use PEM certificates (fallback)
+            elif settings.vendor_mtls_cert_s3_key and settings.vendor_mtls_key_s3_key:
+                logger.info("Using PEM certificates for mTLS authentication")
+                self._load_pem_certificates(s3_client)
+            else:
+                raise ValueError(
+                    "No valid mTLS certificate configuration found. "
+                    "Either provide P12 (VENDOR_MTLS_P12_S3_KEY + VENDOR_MTLS_P12_PASSWORD) "
+                    "or PEM files (VENDOR_MTLS_CERT_S3_KEY + VENDOR_MTLS_KEY_S3_KEY)"
+                )
+
+            logger.info(f"Signature service initialized for API: {self.api_url}")
+
+        except Exception as e:
+            log_exception(logger, e, "Failed to initialize signature service with S3 certificates")
+            raise
+
+    def _load_p12_certificate(self, s3_client):
+        """Load P12 certificate from S3 and extract cert/key."""
+        try:
+            # Download P12 file
+            p12_content = self._download_from_s3(s3_client, settings.vendor_mtls_p12_s3_key)
+            logger.info(f"P12 file downloaded from s3://{settings.s3_bucket_name}/{settings.vendor_mtls_p12_s3_key}")
+
+            # Load P12 and extract private key, certificate, and CA certificates
+            private_key, certificate, ca_certs = pkcs12.load_key_and_certificates(
+                p12_content,
+                settings.vendor_mtls_p12_password.encode('utf-8') if settings.vendor_mtls_p12_password else None
+            )
+
+            if not private_key or not certificate:
+                raise ValueError("P12 file does not contain valid private key or certificate")
+
+            # Convert private key to PEM format
+            key_pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+
+            # Convert certificate to PEM format
+            cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+
+            # Write to temporary files
+            self.cert_path = self._write_temp_file(cert_pem, suffix=".pem", prefix="client_cert_")
+            self.key_path = self._write_temp_file(key_pem, suffix=".pem", prefix="client_key_")
+            logger.info("✓ P12 certificate extracted and converted to PEM format")
+
+            # Handle CA certificates (optional)
+            if ca_certs:
+                ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
+                self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
+                logger.info(f"✓ Extracted {len(ca_certs)} CA certificate(s) from P12")
+            else:
+                self.ca_path = None
+                logger.info("No CA certificates in P12, using default SSL verification")
+
+        except Exception as e:
+            log_exception(logger, e, f"Failed to load P12 certificate from {settings.vendor_mtls_p12_s3_key}")
+            raise
+
+    def _load_pem_certificates(self, s3_client):
+        """Load PEM certificates from S3 (legacy method)."""
+        try:
             # Download client certificate
             cert_content = self._download_from_s3(s3_client, settings.vendor_mtls_cert_s3_key)
             self.cert_path = self._write_temp_file(cert_content, suffix=".pem", prefix="client_cert_")
@@ -84,10 +154,8 @@ class SignatureService:
                 self.ca_path = None
                 logger.info("No CA bundle configured, using default SSL verification")
 
-            logger.info(f"Signature service initialized for API: {self.api_url}")
-
         except Exception as e:
-            log_exception(logger, e, "Failed to initialize signature service with S3 certificates")
+            log_exception(logger, e, "Failed to load PEM certificates")
             raise
 
     def _download_from_s3(self, s3_client, s3_key: str) -> bytes:
