@@ -80,14 +80,23 @@ AWS_REGION=eu-south-1
 S3_BUCKET_NAME=your-bucket-name
 DYNAMODB_TABLE_NAME=ifcer-certifications
 
-# InfoCert API Configuration (mTLS)
-# InfoCert's Manifest-Based Hash Signature API
+# InfoCert API Configuration (Dual API Setup)
+# InfoCert uses TWO separate APIs:
+# 1. mTLS API: For authentication and health checks
+# 2. Signing API: For actual signing operations
+#
 # Certificates are stored in S3 and loaded during application startup
 #
 # InfoCert Environments:
-#   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
-#   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
-VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+#   mTLS API:
+#     STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+#     PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+#   Signing API:
+#     STAGE:      https://apistage.infocert.digital/signature/v1
+#     PRODUCTION: https://api.infocert.digital/signature/v1
+#
+INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
 INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header (e.g., MA0001)
 
 # Option 1: P12 Certificate (recommended)
@@ -173,7 +182,8 @@ docker run -d \
   -e AWS_REGION=eu-south-1 \
   -e S3_BUCKET_NAME=your-bucket-name \
   -e DYNAMODB_TABLE_NAME=ifcer-certifications \
-  -e VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1 \
+  -e INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1 \
+  -e INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1 \
   -e INFOCERT_CREDENTIAL_ID=your-credential-id \
   -e VENDOR_MTLS_P12_S3_KEY=certs/client_cert.p12 \
   -e VENDOR_MTLS_P12_PASSWORD=your-p12-password \
@@ -203,7 +213,8 @@ services:
       - AWS_REGION=${AWS_REGION:-eu-south-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME}
       - DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME:-ifcer-certifications}
-      - VENDOR_API_URL=${VENDOR_API_URL:-https://mtlsapistage.infocert.digital/signature/v1}
+      - INFOCERT_MTLS_API_URL=${INFOCERT_MTLS_API_URL:-https://mtlsapistage.infocert.digital/signature/v1}
+      - INFOCERT_SIGNING_API_URL=${INFOCERT_SIGNING_API_URL:-https://apistage.infocert.digital/signature/v1}
       - INFOCERT_CREDENTIAL_ID=${INFOCERT_CREDENTIAL_ID}
       - VENDOR_MTLS_P12_S3_KEY=${VENDOR_MTLS_P12_S3_KEY:-certs/client_cert.p12}
       - VENDOR_MTLS_P12_PASSWORD=${VENDOR_MTLS_P12_PASSWORD}
@@ -772,7 +783,8 @@ The ECS task role needs these permissions:
         {"name": "AWS_REGION", "value": "eu-south-1"},
         {"name": "S3_BUCKET_NAME", "value": "your-bucket-name"},
         {"name": "DYNAMODB_TABLE_NAME", "value": "ifcer-certifications"},
-        {"name": "VENDOR_API_URL", "value": "https://mtlsapistage.infocert.digital/signature/v1"},
+        {"name": "INFOCERT_MTLS_API_URL", "value": "https://mtlsapistage.infocert.digital/signature/v1"},
+        {"name": "INFOCERT_SIGNING_API_URL", "value": "https://apistage.infocert.digital/signature/v1"},
         {"name": "INFOCERT_CREDENTIAL_ID", "value": "your-credential-id"},
         {"name": "VENDOR_MTLS_P12_S3_KEY", "value": "certs/client_cert.p12"},
         {"name": "VENDOR_MTLS_P12_PASSWORD", "value": "your-p12-password"}
@@ -985,8 +997,12 @@ To verify the file hasn't been tampered with:
 Required environment variables:
 
 ```bash
-# InfoCert API (STAGE for testing, PRODUCTION for live)
-VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+# InfoCert API (Dual API Setup)
+# mTLS API for authentication (STAGE for testing, PRODUCTION for live)
+INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+# Signing API for signing operations
+INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
+# Credential ID
 INFOCERT_CREDENTIAL_ID=your-credential-id  # X-signer-id header
 
 # Option 1: P12 Certificate (recommended)
@@ -1000,6 +1016,7 @@ VENDOR_MTLS_P12_PASSWORD=your-p12-password
 ```
 
 The service automatically:
+- Uses two separate APIs: mTLS API for authentication/health, Signing API for signing operations
 - Loads mTLS certificates from S3 during startup (P12 or PEM format)
 - Extracts certificate and key from P12 if using P12 format
 - Creates manifest JSON from file metadata and hash

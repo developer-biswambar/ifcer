@@ -42,11 +42,17 @@ class SignatureService:
 
     def __init__(self):
         """Initialize signature service with mTLS configuration loaded from S3."""
-        self.api_url = settings.vendor_api_url
+        # InfoCert uses TWO separate APIs:
+        # 1. mTLS API: For authentication and health checks
+        # 2. Signing API: For actual signing operations
+        self.mtls_api_url = settings.infocert_mtls_api_url
+        self.signing_api_url = settings.infocert_signing_api_url
         self.timeout = settings.request_timeout
 
         # Download mTLS certificates from S3 and store as temporary files
         logger.info(f"Loading mTLS certificates from S3 bucket: {settings.s3_bucket_name}")
+        logger.info(f"mTLS API: {self.mtls_api_url}")
+        logger.info(f"Signing API: {self.signing_api_url}")
 
         try:
             # Prepare boto3 client configuration
@@ -82,7 +88,7 @@ class SignatureService:
                     "or PEM files (VENDOR_MTLS_CERT_S3_KEY + VENDOR_MTLS_KEY_S3_KEY)"
                 )
 
-            logger.info(f"Signature service initialized for API: {self.api_url}")
+            logger.info(f"Signature service initialized successfully")
 
         except Exception as e:
             log_exception(logger, e, "Failed to initialize signature service with S3 certificates")
@@ -308,11 +314,12 @@ class SignatureService:
                     }]
                 }
             }
-            logger.info(f"[STEP 4/5] Sending manifest to InfoCert for signing...")
+            logger.info(f"[STEP 4/5] Sending manifest to InfoCert Signing API for signing...")
+            logger.debug(f"[STEP 4/5] Signing API URL: {self.signing_api_url}/sign/v2")
 
-            # Make API request to InfoCert Sign API
+            # Make API request to InfoCert Signing API
             response = session.post(
-                f"{self.api_url}/sign/v2",
+                f"{self.signing_api_url}/sign/v2",
                 json=payload,
                 timeout=self.timeout,
             )
@@ -527,19 +534,19 @@ class SignatureService:
             RequestException: If health check fails
         """
         try:
-            logger.info("Performing vendor API health check")
+            logger.info("Performing InfoCert mTLS API health check")
 
             session = self._create_session()
 
-            # Adjust endpoint as per vendor specification
+            # Health check uses the mTLS API (not the signing API)
             response = session.get(
-                f"{self.api_url}/health",
+                f"{self.mtls_api_url}/health",
                 timeout=self.timeout,
             )
 
             response.raise_for_status()
 
-            logger.info("Vendor API health check successful")
+            logger.info("InfoCert mTLS API health check successful")
             return True
 
         except Exception as e:

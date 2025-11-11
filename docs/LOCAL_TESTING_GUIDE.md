@@ -82,13 +82,23 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 # Optional: Auto-delete records after N days
 # DYNAMODB_TTL_DAYS=365
 
-# ==================== InfoCert API (REAL) ====================
-# InfoCert API environments:
-#   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
-#   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+# ==================== InfoCert API (REAL - Dual API Setup) ====================
+# InfoCert uses TWO separate APIs:
+# 1. mTLS API: For authentication and health checks
+# 2. Signing API: For actual signing operations
+#
+# ENVIRONMENTS:
+#   mTLS API (for authentication):
+#     STAGE:      https://mtlsapistage.infocert.digital/signature/v1
+#     PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
+#
+#   Signing API (for signing operations):
+#     STAGE:      https://apistage.infocert.digital/signature/v1
+#     PRODUCTION: https://api.infocert.digital/signature/v1
 #
 # Use STAGE for testing, PRODUCTION for live operations
-VENDOR_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_MTLS_API_URL=https://mtlsapistage.infocert.digital/signature/v1
+INFOCERT_SIGNING_API_URL=https://apistage.infocert.digital/signature/v1
 
 # Your InfoCert Credential ID (X-signer-id header, e.g., MA0001)
 INFOCERT_CREDENTIAL_ID=your-actual-credential-id
@@ -121,7 +131,8 @@ source .env
 # Check critical variables
 echo "S3 Bucket: $S3_BUCKET_NAME"
 echo "DynamoDB Table: $DYNAMODB_TABLE_NAME"
-echo "InfoCert API: $VENDOR_API_URL"
+echo "InfoCert mTLS API: $INFOCERT_MTLS_API_URL"
+echo "InfoCert Signing API: $INFOCERT_SIGNING_API_URL"
 echo "Credential ID: $INFOCERT_CREDENTIAL_ID"
 
 # All should show your actual values (not "your-actual-...")
