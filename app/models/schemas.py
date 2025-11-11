@@ -84,8 +84,11 @@ class SignatureResponse(BaseModel):
 
     signature: str = Field(..., description="Digital signature")
     timestamp: datetime = Field(..., description="Timestamp of signature")
+    manifest_content: Optional[bytes] = Field(
+        None, description="Manifest JSON content as bytes"
+    )
     p7m_content: Optional[bytes] = Field(
-        None, description="P7M file content (base64 encoded)"
+        None, description="Detached signature (.p7s) file content"
     )
 
 

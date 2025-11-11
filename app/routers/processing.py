@@ -87,9 +87,11 @@ async def recertify_single_file(request: SingleFileRequest):
     The endpoint:
     1. Downloads the file from S3 using the provided key
     2. Computes the file hash
-    3. Sends hash to vendor API for digital signature and timestamp
-    4. Creates P7M file (REQUIRED - fails if P7M creation fails)
-    5. Uploads P7M file back to S3 in signed/ folder
+    3. Sends hash to InfoCert API for detached CAdES signature
+    4. Creates TWO files (REQUIRED - fails if creation fails):
+       - {basename}.json: Manifest with file hash metadata
+       - {basename}.p7s: Detached CAdES signature
+    5. Uploads BOTH files back to S3 in signed/ folder
     6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
 
     Args:
@@ -295,26 +297,49 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         f"Timestamp: {sig_response.timestamp.isoformat()}"
     )
 
-    # P7M content is REQUIRED - fail if not available
-    if not sig_response.p7m_content:
-        error_msg = f"P7M content creation failed for {file_key} - signature service did not return P7M"
+    # Manifest and signature content are REQUIRED - fail if not available
+    if not sig_response.manifest_content:
+        error_msg = f"Manifest creation failed for {file_key} - signature service did not return manifest"
         logger.error(f"[FILE ERROR] {error_msg}")
         raise ValueError(error_msg)
 
-    p7m_content = sig_response.p7m_content
-    logger.debug(f"[FILE STEP 3/5] P7M file ready | Size: {len(p7m_content)} bytes")
+    if not sig_response.p7m_content:
+        error_msg = f"Signature creation failed for {file_key} - signature service did not return signature"
+        logger.error(f"[FILE ERROR] {error_msg}")
+        raise ValueError(error_msg)
 
-    # Step 4: Upload P7M file to S3
+    manifest_content = sig_response.manifest_content
+    signature_content = sig_response.p7m_content  # This is the .p7s detached signature
+    logger.debug(f"[FILE STEP 3/5] Files ready | Manifest: {len(manifest_content)} bytes, Signature: {len(signature_content)} bytes")
+
+    # Step 4: Upload BOTH manifest and signature files to S3
+    # Generate filenames based on original file: abc.txt -> abc.json + abc.p7s
     original_filename = os.path.basename(file_key)
-    p7m_file_key = f"signed/{original_filename}.p7m"
-    logger.debug(f"[FILE STEP 4/5] Uploading P7M to S3 | Destination: {p7m_file_key}")
+    base_name = os.path.splitext(original_filename)[0]  # Remove extension (abc.txt -> abc)
+
+    manifest_file_key = f"signed/{base_name}.json"
+    signature_file_key = f"signed/{base_name}.p7s"
+
+    logger.debug(f"[FILE STEP 4/5] Uploading manifest and signature to S3")
+    logger.debug(f"  - Manifest: {manifest_file_key}")
+    logger.debug(f"  - Signature: {signature_file_key}")
+
+    # Upload manifest JSON
     s3_service.upload_file(
-        file_content=p7m_content,
-        destination_key=p7m_file_key,
-        content_type="application/pkcs7-mime",
+        file_content=manifest_content,
+        destination_key=manifest_file_key,
+        content_type="application/json",
     )
-    signed_file_size = len(p7m_content)
-    logger.info(f"[FILE STEP 4/5] P7M uploaded to S3 | Size: {signed_file_size} bytes")
+    logger.info(f"[FILE STEP 4/5] Manifest uploaded | {manifest_file_key} | Size: {len(manifest_content)} bytes")
+
+    # Upload detached signature (.p7s)
+    s3_service.upload_file(
+        file_content=signature_content,
+        destination_key=signature_file_key,
+        content_type="application/pkcs7-signature",
+    )
+    signature_file_size = len(signature_content)
+    logger.info(f"[FILE STEP 4/5] Signature uploaded | {signature_file_key} | Size: {signature_file_size} bytes")
 
     # Step 5: Save certification metadata to DynamoDB
     logger.debug(f"[FILE STEP 5/5] Saving metadata to DynamoDB...")
@@ -324,9 +349,9 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         hash_algorithm=hash_info.hash_algorithm,
         digital_signature=sig_response.signature,
         vendor_timestamp=sig_response.timestamp,
-        signed_file_key=p7m_file_key,
+        signed_file_key=signature_file_key,  # Store signature file reference
         file_size=hash_info.file_size,
-        signed_file_size=signed_file_size,
+        signed_file_size=signature_file_size,
         status="completed",
     )
     logger.info(f"[FILE STEP 5/5] Metadata saved to DynamoDB")
@@ -337,8 +362,9 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         f"File: {file_key} | "
         f"Duration: {elapsed:.2f}s | "
         f"Original: {hash_info.file_size} bytes | "
-        f"P7M: {signed_file_size} bytes | "
-        f"P7M location: {p7m_file_key}"
+        f"Manifest: {len(manifest_content)} bytes | "
+        f"Signature: {signature_file_size} bytes | "
+        f"Files: {manifest_file_key}, {signature_file_key}"
     )
 
     return FileProcessingResult(
@@ -347,6 +373,6 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
         file_hash=hash_info.hash_value,
         signature=sig_response.signature,
         timestamp=sig_response.timestamp,
-        p7m_file_key=p7m_file_key,
+        p7m_file_key=signature_file_key,  # Store signature file key (field kept for compatibility)
         error_message=None,
     )

@@ -408,7 +408,8 @@ class SignatureService:
             signature_response = SignatureResponse(
                 signature=p7s_content_b64[:100],  # Store first 100 chars for reference
                 timestamp=signing_time,
-                p7m_content=p7s_bytes,  # Field name kept as p7m_content, but contains .p7s detached signature
+                manifest_content=manifest_bytes,  # The manifest JSON as bytes
+                p7m_content=p7s_bytes,  # The detached signature (.p7s)
             )
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
