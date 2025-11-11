@@ -31,13 +31,16 @@ InfoCert has created an account with **unlimited timestamps** for signing.
 - ✅ API URLs
 - ✅ Unlimited timestamps enabled
 
+## Additional Information Received ✅
+
+- ✅ **Certificate ID is the same as X-signer-id**
+  - Staging: `MA678944`
+  - Production: `MOI56167`
+- ✅ **PIN is NOT required** for signing requests
+
 ## What We Still Need ❌
 
-### 1. Certificate ID
-- Is the Certificate ID the same as X-signer-id (MOI56167/MA678944)?
-- Or do we need to call `GET /certificates` to retrieve it?
-
-### 2. API Endpoint Confirmation
+### 1. API Endpoint Confirmation
 Which endpoint should we use for hash signing?
 - `POST /certificates/{certificateId}/sign` with `cadesSignatures`?
 - `POST /certificates/{certificateId}/sign` with `hashSignatures`?
