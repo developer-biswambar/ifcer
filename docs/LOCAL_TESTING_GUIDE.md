@@ -94,8 +94,9 @@ DYNAMODB_TABLE_NAME=ifcer-certifications
 # Use STAGE for testing, PRODUCTION for live operations
 INFOCERT_API_URL=https://mtlsapistage.infocert.digital/signature/v1
 
-# Your InfoCert Credential ID (X-signer-id header, e.g., MA0001)
-INFOCERT_CREDENTIAL_ID=your-actual-credential-id
+# Your InfoCert Credential ID (X-signer-id header)
+# STAGING: MA678944, PRODUCTION: MOI56167
+INFOCERT_CREDENTIAL_ID=MA678944
 
 # ==================== mTLS Certificate Configuration ====================
 # OPTION 1: Use P12 file directly (RECOMMENDED - simpler setup)
