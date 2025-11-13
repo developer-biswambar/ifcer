@@ -62,8 +62,8 @@ async def get_file_details(request: FileDetailsRequest):
         file_info_list: List[FileSigningInfo] = []
 
         for file_meta in matching_files:
-            # Skip if this is already a signed file (in signed/ folder)
-            if file_meta.key.startswith("signed/"):
+            # Skip if this is in signed/ or certs/ folder
+            if file_meta.key.startswith("signed/") or file_meta.key.startswith("certs/"):
                 continue
 
             # Get certification metadata from DynamoDB
@@ -103,6 +103,9 @@ async def get_file_details(request: FileDetailsRequest):
                 )
 
             file_info_list.append(file_info)
+
+        # Sort by last modified date (newest first)
+        file_info_list.sort(key=lambda x: x.original_upload_date, reverse=True)
 
         logger.info(f"Found {len(file_info_list)} matching files")
 
@@ -154,8 +157,11 @@ async def get_files_list(request: FileListRequest):
             prefix=request.prefix,
         )
 
-        # Filter out files in signed/ folder
-        original_files = [f for f in files if not f.key.startswith("signed/")]
+        # Filter out files in signed/ and certs/ folders
+        original_files = [
+            f for f in files
+            if not f.key.startswith("signed/") and not f.key.startswith("certs/")
+        ]
 
         # Batch get certification data from DynamoDB for better performance
         file_keys = [f.key for f in original_files]
@@ -220,6 +226,9 @@ async def get_files_list(request: FileListRequest):
                 )
 
             file_info_list.append(file_info)
+
+        # Sort by last modified date (newest first)
+        file_info_list.sort(key=lambda x: x.original_upload_date, reverse=True)
 
         # Calculate pagination
         total_files = len(file_info_list)
