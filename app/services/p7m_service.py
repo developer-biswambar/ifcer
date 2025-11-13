@@ -19,24 +19,32 @@ class P7MService:
     """Service for building P7M (PKCS#7/CAdES) signature files."""
 
     def create_p7m_from_signature(
-        self, file_content: bytes, signature_bytes: bytes, cert_der_bytes: bytes
+        self,
+        file_content: bytes,
+        signature_bytes: bytes,
+        cert_der_bytes: bytes,
+        signed_attributes: 'cms.CMSAttributes',
+        timestamp_bytes: bytes = None
     ) -> bytes:
         """
-        Create a P7M (PKCS#7/CAdES ENVELOPED) file with original file embedded.
+        Create a P7M (PKCS#7/CAdES ENVELOPED) file with original file embedded and SignedAttributes.
 
         This is used with InfoCert hashSignatures API workflow:
-        1. Original file hash is sent to InfoCert
-        2. InfoCert returns RAW signature bytes of the hash
-        3. We fetch the certificate separately from InfoCert
-        4. We build the complete P7M with ORIGINAL FILE EMBEDDED
+        1. Build SignedAttributes (DTBS) with file hash
+        2. Compute DTBS digest (hash of SignedAttributes)
+        3. Send DTBS digest to InfoCert
+        4. InfoCert returns signature of DTBS
+        5. We build complete P7M with file + SignedAttributes + signature
 
         This creates a CAdES-BES (Basic Electronic Signature) structure which is
         a PKCS#7 SignedData with ENVELOPED content (file embedded inside).
 
         Args:
             file_content: The ORIGINAL FILE content as bytes (to be embedded in P7M)
-            signature_bytes: The RAW signature bytes from InfoCert hashSignatures response
+            signature_bytes: The signature bytes from InfoCert (signature of DTBS)
             cert_der_bytes: The DER-encoded signing certificate fetched from InfoCert
+            signed_attributes: The SignedAttributes (DTBS) structure
+            timestamp_bytes: Optional RFC 3161 timestamp token bytes
 
         Returns:
             Complete P7M file as bytes (DER-encoded PKCS#7 SignedData with embedded file)
@@ -90,15 +98,30 @@ class P7MService:
                 'algorithm': '1.2.840.113549.1.1.11'  # sha256WithRSAEncryption OID
             })
 
-            # Create SignerInfo
-            logger.debug("[P7M CREATE] Building SignerInfo structure...")
-            signer_info = cms.SignerInfo({
+            # Create SignerInfo with SignedAttributes
+            logger.debug("[P7M CREATE] Building SignerInfo structure with SignedAttributes...")
+            signer_info_dict = {
                 'version': 'v1',
                 'sid': signer_identifier,
                 'digest_algorithm': digest_algorithm,
+                'signed_attrs': signed_attributes,  # Include SignedAttributes (DTBS)
                 'signature_algorithm': signature_algorithm,
                 'signature': core.OctetString(signature_bytes)
-            })
+            }
+
+            # Add timestamp token as unsigned attribute if present
+            if timestamp_bytes:
+                logger.debug("[P7M CREATE] Adding timestamp token as unsigned attribute...")
+                unsigned_attrs = cms.CMSAttributes([
+                    cms.CMSAttribute({
+                        'type': cms.CMSAttributeType('1.2.840.113549.1.9.16.2.14'),  # id-aa-timeStampToken
+                        'values': [cms.ContentInfo.load(timestamp_bytes)]
+                    })
+                ])
+                signer_info_dict['unsigned_attrs'] = unsigned_attrs
+                logger.debug(f"[P7M CREATE] Timestamp token added: {len(timestamp_bytes)} bytes")
+
+            signer_info = cms.SignerInfo(signer_info_dict)
 
             # Create SignedData
             logger.debug("[P7M CREATE] Building CAdES SignedData structure...")

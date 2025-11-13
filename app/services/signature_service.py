@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import requests
 from requests.exceptions import RequestException, Timeout, SSLError
+from asn1crypto import cms, core
 
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
@@ -80,19 +81,46 @@ class SignatureService:
                 f"Size: {len(original_file_content)} bytes"
             )
 
-            # Step 1: Convert file hash to base64 (InfoCert expects base64)
-            logger.debug(f"[STEP 1/4] Preparing file hash for InfoCert API")
+            # Step 1: Build SignedAttributes (DTBS - Data To Be Signed)
+            logger.debug(f"[STEP 1/5] Building SignedAttributes (DTBS) structure")
+
             file_hash_bytes = bytes.fromhex(signature_request.file_hash)
-            file_hash_b64 = base64.b64encode(file_hash_bytes).decode('ascii')
-            logger.info(f"[STEP 1/4] File hash (base64): {file_hash_b64[:32]}...")
 
-            # Step 2: Create session with mTLS
-            logger.debug(f"[STEP 2/4] Creating mTLS session for InfoCert API")
+            # Build SignedAttributes according to ETSI EN 319 102-1
+            signed_attrs = cms.CMSAttributes([
+                cms.CMSAttribute({
+                    'type': cms.CMSAttributeType('content_type'),
+                    'values': [cms.ContentType('data')]
+                }),
+                cms.CMSAttribute({
+                    'type': cms.CMSAttributeType('message_digest'),
+                    'values': [core.OctetString(file_hash_bytes)]
+                }),
+                cms.CMSAttribute({
+                    'type': cms.CMSAttributeType('signing_time'),
+                    'values': [core.UTCTime(datetime.now(timezone.utc))]
+                })
+            ])
+
+            logger.info(f"[STEP 1/5] SignedAttributes built with file hash: {signature_request.file_hash[:32]}...")
+
+            # Step 2: Compute DTBS digest (hash of SignedAttributes)
+            logger.debug(f"[STEP 2/5] Computing DTBS digest (hash of SignedAttributes)")
+
+            # DER encode SignedAttributes for hashing
+            signed_attrs_der = signed_attrs.dump()
+            dtbs_digest = hashlib.sha256(signed_attrs_der).digest()
+            dtbs_digest_b64 = base64.b64encode(dtbs_digest).decode('ascii')
+
+            logger.info(f"[STEP 2/5] DTBS digest computed: {dtbs_digest_b64[:32]}...")
+
+            # Step 3: Create session with mTLS
+            logger.debug(f"[STEP 3/5] Creating mTLS session for InfoCert API")
             session = self.cert_service._create_session()
-            logger.info(f"[STEP 2/4] mTLS session established")
+            logger.info(f"[STEP 3/5] mTLS session established")
 
-            # Step 3: Send original file hash to InfoCert hashSignatures API
-            logger.debug(f"[STEP 3/4] Preparing InfoCert hashSignatures API request")
+            # Step 4: Send DTBS digest to InfoCert hashSignatures API
+            logger.debug(f"[STEP 4/5] Preparing InfoCert hashSignatures API request")
 
             payload = {
                 "applicationId": "ifcer-batch-service",
@@ -102,15 +130,15 @@ class SignatureService:
                 },
                 "hashSignatures": [{
                     "requestId": f"file-{signature_request.filename}",
-                    "hash": file_hash_b64,
+                    "hash": dtbs_digest_b64,  # Send DTBS digest, not file hash!
                     "withTimestamp": True
                 }]
             }
 
             endpoint_url = f"{self.api_url}/certificates/{settings.infocert_certificate_id}/sign"
 
-            logger.info(f"[STEP 3/4] Sending original file hash to InfoCert for signing...")
-            logger.debug(f"[STEP 3/4] API URL: {endpoint_url}")
+            logger.info(f"[STEP 4/5] Sending DTBS digest to InfoCert for signing...")
+            logger.debug(f"[STEP 4/5] API URL: {endpoint_url}")
 
             response = session.post(
                 endpoint_url,
@@ -124,7 +152,7 @@ class SignatureService:
             )
 
             response.raise_for_status()
-            logger.info(f"[STEP 3/4] Received response from InfoCert (HTTP {response.status_code})")
+            logger.info(f"[STEP 4/5] Received response from InfoCert (HTTP {response.status_code})")
 
             # Parse response
             response_data = response.json()
@@ -150,29 +178,33 @@ class SignatureService:
             if not raw_signature_b64:
                 raise ValueError("InfoCert API did not return signed document content")
 
-            logger.info(f"[STEP 3/4] Received RAW signature bytes ({len(raw_signature_b64)} chars base64)")
+            logger.info(f"[STEP 4/5] Received signature bytes ({len(raw_signature_b64)} chars base64)")
 
             raw_signature_bytes = base64.b64decode(raw_signature_b64)
 
             # Extract timestamp if present
             signed_timestamp = result.get("signedTimestamp", {})
+            timestamp_bytes = None
             if signed_timestamp:
                 timestamp_b64 = signed_timestamp.get("content", "")
-                logger.debug(f"[STEP 3/4] Timestamp included: {len(timestamp_b64)} chars")
+                timestamp_bytes = base64.b64decode(timestamp_b64) if timestamp_b64 else None
+                logger.debug(f"[STEP 4/5] Timestamp included: {len(timestamp_b64)} chars")
 
-            # Step 4: Fetch signing certificate and build P7M with original file embedded
-            logger.debug(f"[STEP 4/4] Fetching signing certificate from InfoCert")
+            # Step 5: Fetch signing certificate and build P7M with SignedAttributes
+            logger.debug(f"[STEP 5/5] Fetching signing certificate from InfoCert")
             cert_der_bytes = self.cert_service.get_signing_certificate_bytes()
-            logger.info(f"[STEP 4/4] Certificate fetched: {len(cert_der_bytes)} bytes")
+            logger.info(f"[STEP 5/5] Certificate fetched: {len(cert_der_bytes)} bytes")
 
-            # Build complete P7M file with ORIGINAL FILE EMBEDDED
-            logger.debug(f"[STEP 4/4] Building P7M file with original file embedded ({len(original_file_content)} bytes)")
+            # Build complete P7M file with ORIGINAL FILE EMBEDDED and SignedAttributes
+            logger.debug(f"[STEP 5/5] Building P7M file with SignedAttributes ({len(original_file_content)} bytes)")
             p7m_bytes = self.p7m_service.create_p7m_from_signature(
-                file_content=original_file_content,  # Embed original file, NOT manifest
-                signature_bytes=raw_signature_bytes,
-                cert_der_bytes=cert_der_bytes
+                file_content=original_file_content,  # Embed original file
+                signature_bytes=raw_signature_bytes,  # Signature of DTBS
+                cert_der_bytes=cert_der_bytes,
+                signed_attributes=signed_attrs,  # Include SignedAttributes
+                timestamp_bytes=timestamp_bytes  # Include timestamp if present
             )
-            logger.info(f"[STEP 4/4] P7M file created: {len(p7m_bytes)} bytes (includes embedded file)")
+            logger.info(f"[STEP 5/5] P7M file created: {len(p7m_bytes)} bytes (includes embedded file + SignedAttributes)")
 
             # Create response
             signing_time = datetime.now(timezone.utc)
