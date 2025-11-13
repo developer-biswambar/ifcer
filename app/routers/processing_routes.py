@@ -18,6 +18,7 @@ from app.services.s3_service import S3Service
 from app.services.hash_service import HashService
 from app.services.signature_service import SignatureService
 from app.services.dynamodb_service import DynamoDBService
+from app.services.validation_service import ValidationService
 from app.utils.logger import setup_logger, log_exception
 from app import __version__
 
@@ -28,6 +29,7 @@ s3_service = S3Service()
 hash_service = HashService()
 signature_service = SignatureService()
 dynamodb_service = DynamoDBService()
+validation_service = ValidationService()
 
 router = APIRouter()
 
@@ -306,6 +308,21 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
 
     p7m_content = sig_response.p7m_content
     logger.debug(f"[FILE STEP 3/5] P7M ready | Size: {len(p7m_content)} bytes (includes embedded file)")
+
+    # Validate P7M file with DTBS workflow
+    logger.info("[VALIDATION] Validating P7M signature with DTBS workflow...")
+    validation_result = validation_service.validate_signature(
+        original_file_content=file_content,
+        p7m_file=p7m_content
+    )
+
+    if not validation_result["valid"]:
+        error_msg = f"P7M validation failed: {', '.join(validation_result['errors'])}"
+        logger.error(f"[VALIDATION ERROR] {error_msg}")
+        logger.error(f"[VALIDATION ERROR] Failed checks: {validation_result['checks']}")
+        raise ValueError(error_msg)
+
+    logger.info(f"[VALIDATION] ✓ P7M validation passed | Certificate: {validation_result['certificate_info'].get('subject', 'N/A')}")
 
     # Step 4: Upload P7M file to S3
     # Generate filename based on original file: abc.txt -> abc.p7m

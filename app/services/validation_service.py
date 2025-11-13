@@ -223,6 +223,9 @@ class ValidationService:
     def _verify_signature_cryptographic(self, file_content: bytes, p7m_file: bytes) -> Tuple[bool, Dict]:
         """Verify signature cryptographically using certificate.
 
+        With DTBS workflow, InfoCert signs the SignedAttributes (DTBS), not the file directly.
+        We must verify the signature against the DER-encoded SignedAttributes.
+
         Args:
             file_content: The original file content (or extracted embedded content from P7M)
             p7m_file: The complete P7M file bytes
@@ -255,22 +258,52 @@ class ValidationService:
             signer_info = signed_data['signer_infos'][0]
             signature = signer_info['signature'].native
 
-            # Verify signature
+            # Extract SignedAttributes (DTBS)
+            signed_attrs = signer_info['signed_attrs']
+            if not signed_attrs:
+                logger.error("[VALIDATION] No SignedAttributes found in SignerInfo")
+                return False, {}
+
+            # Verify signature against SignedAttributes (DTBS)
             public_key = cert.public_key()
 
             try:
-                # Compute file hash (what was signed by InfoCert)
-                file_hash = hashlib.sha256(file_content).digest()
+                # Compute DTBS digest (hash of DER-encoded SignedAttributes)
+                # Note: For signature verification, we need to use the explicit tag [0]
+                signed_attrs_der = signed_attrs.dump()
+                # Replace implicit tag with explicit tag for verification
+                signed_attrs_der = b'\x31' + signed_attrs_der[1:]  # Change to SET OF
+                dtbs_digest = hashlib.sha256(signed_attrs_der).digest()
 
-                # Verify signature
+                logger.debug(f"[VALIDATION] DTBS digest computed: {dtbs_digest.hex()[:32]}...")
+
+                # Verify signature against DTBS digest
                 public_key.verify(
                     signature,
-                    file_hash,
+                    dtbs_digest,
                     padding.PKCS1v15(),
                     hashes.SHA256()
                 )
 
                 logger.debug("[VALIDATION] ✓ Signature cryptographically verified")
+
+                # Verify file hash in SignedAttributes matches actual file
+                message_digest = None
+                for attr in signed_attrs:
+                    if attr['type'].native == 'message_digest':
+                        message_digest = attr['values'][0].native
+                        break
+
+                if message_digest:
+                    actual_file_hash = hashlib.sha256(file_content).digest()
+                    if message_digest != actual_file_hash:
+                        logger.error(
+                            f"[VALIDATION] File hash mismatch! "
+                            f"SignedAttributes: {message_digest.hex()[:32]}... "
+                            f"Actual: {actual_file_hash.hex()[:32]}..."
+                        )
+                        return False, {}
+                    logger.debug("[VALIDATION] ✓ File hash in SignedAttributes matches actual file")
 
                 # Extract certificate info
                 cert_info = {
