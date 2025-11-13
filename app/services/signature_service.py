@@ -247,7 +247,7 @@ class SignatureService:
 
         return session
 
-    def _fetch_signing_certificate(self, session: requests.Session, certificate_id: str) -> bytes:
+    def _fetch_signing_certificate(self, session: requests.Session) -> bytes:
         """
         Fetch the signing certificate from InfoCert API.
 
@@ -256,7 +256,6 @@ class SignatureService:
 
         Args:
             session: Configured requests.Session with mTLS
-            certificate_id: InfoCert certificate ID (e.g., CD6972A8922C0230B45C3F97B26891E3)
 
         Returns:
             DER-encoded certificate bytes
@@ -266,15 +265,15 @@ class SignatureService:
             ValueError: If certificate cannot be retrieved
         """
         try:
-            endpoint_url = f"{self.api_url}/certificates/{certificate_id}"
+            endpoint_url = f"{self.api_url}/certificates"
             logger.debug(f"[CERT FETCH] Fetching certificate from: {endpoint_url}")
 
             response = session.get(
                 endpoint_url,
                 headers={
                     "Authorization": f"Bearer {settings.infocert_sat}",
-                    "X-signer-id": settings.infocert_credential_id,
-                    "Accept": "application/json"
+                    "Content-Type": "application/json",
+                    "X-signer-id": settings.infocert_credential_id
                 },
                 timeout=self.timeout
             )
@@ -303,7 +302,7 @@ class SignatureService:
             raise ValueError(f"Unexpected certificate response format from InfoCert")
 
         except Exception as e:
-            log_exception(logger, e, f"Failed to fetch certificate {certificate_id}")
+            log_exception(logger, e, "Failed to fetch signing certificate from InfoCert")
             raise
 
     def sign_file_hash(self, signature_request: SignatureRequest) -> SignatureResponse:
@@ -381,10 +380,13 @@ class SignatureService:
             payload = {
                 "applicationId": "ifcer-batch-service",
                 "pin": settings.infocert_pin,
+                "authorization": {
+                    "sat": settings.infocert_sat
+                },
                 "hashSignatures": [{
                     "requestId": f"manifest-{signature_request.filename}",
                     "hash": manifest_hash_b64,
-                    "withTimestamp": "true"  # STRING "true", not boolean!
+                    "withTimestamp": True  # boolean true
                 }]
             }
 
@@ -398,6 +400,7 @@ class SignatureService:
             logger.debug(f"[STEP 4/5] Request ID: manifest-{signature_request.filename}")
 
             # Make API request to InfoCert API with mTLS, SAT Bearer token, and X-signer-id header
+            # SAT is sent in BOTH Authorization header AND request body (authorization.sat)
             response = session.post(
                 endpoint_url,
                 json=payload,
@@ -466,7 +469,7 @@ class SignatureService:
 
             # Step 5: Fetch signing certificate and build P7M
             logger.debug(f"[STEP 5/5] Fetching signing certificate from InfoCert")
-            cert_der_bytes = self._fetch_signing_certificate(session, certificate_id)
+            cert_der_bytes = self._fetch_signing_certificate(session)
             logger.info(f"[STEP 5/5] Certificate fetched: {len(cert_der_bytes)} bytes")
 
             # Build complete P7M file from raw signature + certificate + manifest
