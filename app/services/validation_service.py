@@ -268,19 +268,20 @@ class ValidationService:
             public_key = cert.public_key()
 
             try:
-                # Compute DTBS digest (hash of DER-encoded SignedAttributes)
-                # Note: For signature verification, we need to use the explicit tag [0]
+                # DER-encode SignedAttributes with SET OF tag for signature verification
+                # Note: SignedAttributes stored with implicit tag [0], but signature computed over SET OF
                 signed_attrs_der = signed_attrs.dump()
-                # Replace implicit tag with explicit tag for verification
-                signed_attrs_der = b'\x31' + signed_attrs_der[1:]  # Change to SET OF
-                dtbs_digest = hashlib.sha256(signed_attrs_der).digest()
+                # Replace implicit tag [0] (0xA0) with SET OF tag (0x31)
+                signed_attrs_der = b'\x31' + signed_attrs_der[1:]
 
-                logger.debug(f"[VALIDATION] DTBS digest computed: {dtbs_digest.hex()[:32]}...")
+                logger.debug(f"[VALIDATION] SignedAttributes DER ({len(signed_attrs_der)} bytes): {signed_attrs_der[:32].hex()}...")
 
-                # Verify signature against DTBS digest
+                # Verify signature against SignedAttributes bytes
+                # The verify method will hash the data with SHA256 and verify against signature
+                # We pass the SignedAttributes bytes, NOT the hash
                 public_key.verify(
                     signature,
-                    dtbs_digest,
+                    signed_attrs_der,  # Pass SignedAttributes bytes, not hash!
                     padding.PKCS1v15(),
                     hashes.SHA256()
                 )
