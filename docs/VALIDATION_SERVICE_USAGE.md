@@ -1,12 +1,12 @@
 # Validation Service Usage Guide
 
-The `ValidationService` provides independent signature validation functions that can be used anywhere in the codebase. It mimics regulatory authority validation processes.
+The `ValidationService` provides independent signature validation functions that can be used anywhere in the codebase. It mimics regulatory authority validation processes for P7M files with embedded content.
 
 ## Features
 
-- ✅ Manifest structure validation
-- ✅ File hash verification (SHA256, SHA512, SHA1)
 - ✅ P7M/PKCS#7 structure verification
+- ✅ Embedded file extraction from P7M
+- ✅ File integrity verification (embedded vs original)
 - ✅ Cryptographic signature verification
 - ✅ Certificate validation (expiration, validity dates)
 - ✅ Can be used independently or integrated into workflows
@@ -25,15 +25,12 @@ s3_service = S3Service()
 
 # Download files from S3
 original_file = s3_service.download_file("uploads/document.txt")
-manifest_json = s3_service.download_file("signed/document.json")
-p7s_signature = s3_service.download_file("signed/document.p7s")
+p7m_file = s3_service.download_file("signed/document.p7m")
 
 # Perform full validation
 result = validator.validate_signature(
     original_file_content=original_file,
-    manifest_content=manifest_json,
-    p7s_signature=p7s_signature,
-    expected_filename="document.txt"  # Optional
+    p7m_file=p7m_file
 )
 
 # Check results
@@ -45,23 +42,23 @@ else:
     print(f"Errors: {result['errors']}")
 ```
 
-### 2. Quick Validation (Hash Only)
+### 2. Quick Validation (Content Match Only)
 
 ```python
 from app.services.validation_service import ValidationService
 
 validator = ValidationService()
 
-# Just verify file hash matches manifest (fast)
+# Just verify embedded file matches original (fast)
 is_valid = validator.quick_validate(
     original_file_content=original_file,
-    manifest_content=manifest_json
+    p7m_file=p7m_file
 )
 
 if is_valid:
-    print("✓ File hash matches manifest")
+    print("✓ Embedded file matches original")
 else:
-    print("× Hash mismatch")
+    print("× Embedded file mismatch")
 ```
 
 ## Use Cases
@@ -75,16 +72,15 @@ class SignatureService:
     def __init__(self):
         self.validator = ValidationService()
 
-    def sign_and_validate(self, signature_request):
+    def sign_and_validate(self, signature_request, original_file_content):
         # Perform signing
-        response = self.sign_file_hash(signature_request)
+        response = self.sign_file_hash(signature_request, original_file_content)
 
         # Optional: Validate immediately after signing
         if settings.validate_after_signing:
             validation_result = self.validator.validate_signature(
-                original_file_content=original_file,
-                manifest_content=response.manifest_content,
-                p7s_signature=response.p7m_content
+                original_file_content=original_file_content,
+                p7m_file=response.p7m_content
             )
 
             if not validation_result["valid"]:
@@ -103,14 +99,13 @@ async def process_and_validate(file_key):
     original = s3_service.download_file(file_key)
 
     # Sign the file
-    signature_response = await sign_file(file_key)
+    signature_response = await sign_file(file_key, original)
 
-    # Validate signed file
+    # Validate P7M file
     validator = ValidationService()
     result = validator.validate_signature(
         original_file_content=original,
-        manifest_content=signature_response.manifest_content,
-        p7s_signature=signature_response.p7m_content
+        p7m_file=signature_response.p7m_content
     )
 
     # Store validation result in DynamoDB
@@ -125,34 +120,31 @@ async def process_and_validate(file_key):
 from app.services.validation_service import ValidationService
 import sys
 
-def verify_signed_file(original_path, manifest_path, p7s_path):
-    """CLI tool to verify signed files."""
+def verify_p7m_file(original_path, p7m_path):
+    """CLI tool to verify P7M files."""
     validator = ValidationService()
 
     with open(original_path, 'rb') as f:
         original = f.read()
 
-    with open(manifest_path, 'rb') as f:
-        manifest = f.read()
+    with open(p7m_path, 'rb') as f:
+        p7m = f.read()
 
-    with open(p7s_path, 'rb') as f:
-        p7s = f.read()
-
-    result = validator.validate_signature(original, manifest, p7s)
+    result = validator.validate_signature(original, p7m)
 
     if result["valid"]:
-        print("✓ VALID SIGNATURE")
+        print("✓ VALID P7M SIGNATURE")
         print(f"Signed by: {result['certificate_info']['subject']}")
         print(f"Valid until: {result['certificate_info']['not_valid_after']}")
         return 0
     else:
-        print("× INVALID SIGNATURE")
+        print("× INVALID P7M SIGNATURE")
         for error in result["errors"]:
             print(f"  - {error}")
         return 1
 
 if __name__ == "__main__":
-    sys.exit(verify_signed_file(sys.argv[1], sys.argv[2], sys.argv[3]))
+    sys.exit(verify_p7m_file(sys.argv[1], sys.argv[2]))
 ```
 
 ## Validation Result Structure
@@ -161,17 +153,11 @@ if __name__ == "__main__":
 {
     "valid": bool,  # Overall validation result
     "checks": {
-        "manifest_structure": bool,      # Manifest JSON valid
-        "file_hash_match": bool,         # Hash matches
-        "signature_structure": bool,     # P7M structure valid
-        "signature_verified": bool,      # Cryptographic verification
-        "certificate_valid": bool        # Certificate not expired
-    },
-    "manifest_data": {
-        "fileName": "document.txt",
-        "hash": "ABC123...",
-        "algorithm": "SHA256",
-        "timestamp": "2025-11-13T..."
+        "signature_structure": bool,      # P7M structure valid
+        "embedded_file_extracted": bool,  # File extracted from P7M
+        "embedded_file_match": bool,      # Embedded file matches original
+        "signature_verified": bool,       # Cryptographic verification
+        "certificate_valid": bool         # Certificate not expired
     },
     "certificate_info": {
         "subject": "CN=...",
@@ -186,7 +172,6 @@ if __name__ == "__main__":
         "not_yet_valid": false,
         "valid": true
     },
-    "computed_file_hash": "ABC123...",
     "p7m_data": {
         "version": "v1",
         "digest_algorithms": ["sha256"],
@@ -194,7 +179,7 @@ if __name__ == "__main__":
         "signer_count": 1
     },
     "errors": [],  # List of error messages if validation fails
-    "validation_timestamp": "2025-11-13T..."
+    "validation_timestamp": "2025-11-14T..."
 }
 ```
 
@@ -205,16 +190,15 @@ if __name__ == "__main__":
 ```python
 @router.post("/validate-signature")
 async def validate_signature_endpoint(request: ValidateRequest):
-    """Endpoint to validate a signed file."""
+    """Endpoint to validate a P7M signed file."""
     try:
         # Download files
         original = s3_service.download_file(request.original_file_key)
-        manifest = s3_service.download_file(request.manifest_key)
-        p7s = s3_service.download_file(request.p7s_key)
+        p7m = s3_service.download_file(request.p7m_key)
 
         # Validate
         validator = ValidationService()
-        result = validator.validate_signature(original, manifest, p7s)
+        result = validator.validate_signature(original, p7m)
 
         return result
 
@@ -228,7 +212,7 @@ async def validate_signature_endpoint(request: ValidateRequest):
 from app.services.validation_service import ValidationService
 
 async def validate_batch(file_keys: List[str]):
-    """Validate multiple signed files."""
+    """Validate multiple P7M signed files."""
     validator = ValidationService()
     results = []
 
@@ -243,11 +227,10 @@ async def validate_batch(file_keys: List[str]):
 
             # Download files
             original = s3_service.download_file(file_key)
-            manifest = s3_service.download_file(cert["signed_file_key"].replace(".p7s", ".json"))
-            p7s = s3_service.download_file(cert["signed_file_key"])
+            p7m = s3_service.download_file(cert["signed_file_key"])
 
             # Validate
-            result = validator.validate_signature(original, manifest, p7s)
+            result = validator.validate_signature(original, p7m)
             result["file_key"] = file_key
             results.append(result)
 
@@ -282,22 +265,22 @@ from app.services.validation_service import ValidationService
 def test_validation_service():
     validator = ValidationService()
 
-    # Test with valid signature
+    # Test with valid P7M file
     result = validator.validate_signature(
         original_file_content=test_file,
-        manifest_content=test_manifest,
-        p7s_signature=test_p7s
+        p7m_file=test_p7m
     )
 
     assert result["valid"] == True
-    assert result["checks"]["file_hash_match"] == True
+    assert result["checks"]["embedded_file_extracted"] == True
+    assert result["checks"]["embedded_file_match"] == True
     assert result["checks"]["signature_verified"] == True
 ```
 
 ## Best Practices
 
 1. **Use full validation for regulatory compliance** - The complete `validate_signature()` method
-2. **Use quick validation for performance** - The `quick_validate()` method for hash-only checks
+2. **Use quick validation for performance** - The `quick_validate()` method for embedded file comparison only
 3. **Store validation results** - Save validation results in DynamoDB for audit trails
 4. **Log validation failures** - Always log why validation failed
 5. **Independent verification** - Keep validation separate from signing logic
@@ -305,7 +288,9 @@ def test_validation_service():
 ## Notes
 
 - **Independent Service**: Does not depend on `SignatureService`
-- **Regulatory Compliance**: Mimics Italian authority validation process
+- **Regulatory Compliance**: Mimics Italian authority P7M validation process
 - **Flexible Integration**: Can be used anywhere in the codebase
-- **Comprehensive Checks**: Validates structure, cryptography, and certificates
+- **Comprehensive Checks**: Validates P7M structure, embedded content, cryptography, and certificates
 - **Error Details**: Provides detailed error messages for debugging
+- **P7M Format**: Works with ENVELOPED signatures (original file embedded in P7M)
+- **No Manifest**: Does not use separate manifest files - validates embedded content directly

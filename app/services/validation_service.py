@@ -66,50 +66,23 @@ class ValidationService:
         result = {
             "valid": False,
             "checks": {
-                "manifest_structure": False,
-                "file_hash_match": False,
                 "signature_structure": False,
+                "embedded_file_extracted": False,
+                "embedded_file_match": False,
                 "signature_verified": False,
                 "certificate_valid": False
             },
-            "manifest_data": {},
             "certificate_info": {},
             "errors": [],
             "validation_timestamp": start_time.isoformat()
         }
 
         try:
-            logger.info("[VALIDATION] Starting comprehensive signature validation")
+            logger.info("[VALIDATION] Starting comprehensive P7M validation")
 
-            # Step 1: Validate manifest structure
-            logger.debug("[VALIDATION] Step 1: Validating manifest structure")
-            manifest_valid, manifest_data = self._validate_manifest_structure(manifest_content, expected_filename)
-            result["checks"]["manifest_structure"] = manifest_valid
-            result["manifest_data"] = manifest_data
-
-            if not manifest_valid:
-                result["errors"].append("Invalid manifest structure")
-                logger.error("[VALIDATION] × Manifest structure invalid")
-                return result
-
-            # Step 2: Verify original file hash matches manifest
-            logger.debug("[VALIDATION] Step 2: Verifying file hash matches manifest")
-            hash_match, computed_hash = self._verify_file_hash(
-                original_file_content,
-                manifest_data.get("hash", ""),
-                manifest_data.get("algorithm", "SHA256")
-            )
-            result["checks"]["file_hash_match"] = hash_match
-            result["computed_file_hash"] = computed_hash
-
-            if not hash_match:
-                result["errors"].append(f"File hash mismatch. Computed: {computed_hash}, Expected: {manifest_data.get('hash')}")
-                logger.error(f"[VALIDATION] × File hash mismatch")
-                return result
-
-            # Step 3: Verify P7M signature structure
-            logger.debug("[VALIDATION] Step 3: Verifying P7M signature structure")
-            structure_valid, p7m_data = self._verify_p7m_structure(p7s_signature)
+            # Step 1: Verify P7M signature structure
+            logger.debug("[VALIDATION] Step 1: Verifying P7M signature structure")
+            structure_valid, p7m_data = self._verify_p7m_structure(p7m_file)
             result["checks"]["signature_structure"] = structure_valid
             result["p7m_data"] = p7m_data
 
@@ -118,11 +91,38 @@ class ValidationService:
                 logger.error("[VALIDATION] × P7M structure invalid")
                 return result
 
+            # Step 2: Extract embedded file from P7M
+            logger.debug("[VALIDATION] Step 2: Extracting embedded file from P7M")
+            extracted_file, extracted_ok = self._extract_embedded_file(p7m_file)
+            result["checks"]["embedded_file_extracted"] = extracted_ok
+
+            if not extracted_ok or extracted_file is None:
+                result["errors"].append("Failed to extract embedded file from P7M")
+                logger.error("[VALIDATION] × Failed to extract embedded file")
+                return result
+
+            logger.info(f"[VALIDATION] Step 2: Extracted {len(extracted_file)} bytes from P7M")
+
+            # Step 3: Verify extracted file matches original file
+            logger.debug("[VALIDATION] Step 3: Verifying extracted file matches original")
+            file_match = extracted_file == original_file_content
+            result["checks"]["embedded_file_match"] = file_match
+
+            if not file_match:
+                result["errors"].append(
+                    f"Embedded file mismatch. Original: {len(original_file_content)} bytes, "
+                    f"Extracted: {len(extracted_file)} bytes"
+                )
+                logger.error("[VALIDATION] × Embedded file does not match original")
+                return result
+
+            logger.info("[VALIDATION] Step 3: ✓ Embedded file matches original")
+
             # Step 4: Verify signature cryptographically
             logger.debug("[VALIDATION] Step 4: Verifying signature cryptographically")
             sig_verified, cert_info = self._verify_signature_cryptographic(
-                manifest_content,
-                p7s_signature
+                extracted_file,  # Verify signature against extracted file
+                p7m_file
             )
             result["checks"]["signature_verified"] = sig_verified
             result["certificate_info"] = cert_info
@@ -155,66 +155,40 @@ class ValidationService:
             result["errors"].append(f"Validation exception: {str(e)}")
             return result
 
-    def _validate_manifest_structure(self, manifest_content: bytes, expected_filename: Optional[str]) -> Tuple[bool, Dict]:
-        """Validate manifest JSON structure and required fields."""
+    def _extract_embedded_file(self, p7m_file: bytes) -> Tuple[Optional[bytes], bool]:
+        """Extract embedded file content from P7M (ENVELOPED signature)."""
         try:
-            manifest_str = manifest_content.decode('utf-8')
-            manifest = json.loads(manifest_str)
+            # Parse P7M structure
+            content_info = cms.ContentInfo.load(p7m_file)
 
-            # Check required fields
-            required_fields = ["fileName", "hash", "algorithm", "timestamp"]
-            missing_fields = [field for field in required_fields if field not in manifest]
+            if content_info['content_type'].native != 'signed_data':
+                logger.error("[VALIDATION] P7M content type is not signed_data")
+                return None, False
 
-            if missing_fields:
-                logger.error(f"[VALIDATION] Manifest missing required fields: {missing_fields}")
-                return False, {}
+            signed_data = content_info['content']
 
-            # Verify filename if expected
-            if expected_filename and manifest.get("fileName") != expected_filename:
-                logger.error(f"[VALIDATION] Filename mismatch: {manifest.get('fileName')} != {expected_filename}")
-                return False, manifest
+            # Extract encapsulated content info
+            encap_content_info = signed_data['encap_content_info']
 
-            logger.debug(f"[VALIDATION] ✓ Manifest structure valid")
-            return True, manifest
+            # Check if content is present (ENVELOPED)
+            if 'content' not in encap_content_info or encap_content_info['content'] is None:
+                logger.error("[VALIDATION] P7M does not contain embedded content (DETACHED signature)")
+                return None, False
 
-        except json.JSONDecodeError as e:
-            logger.error(f"[VALIDATION] Invalid JSON in manifest: {str(e)}")
-            return False, {}
-        except Exception as e:
-            logger.error(f"[VALIDATION] Error validating manifest structure: {str(e)}")
-            return False, {}
+            # Extract the embedded file content
+            embedded_content = encap_content_info['content'].native
 
-    def _verify_file_hash(self, file_content: bytes, expected_hash: str, algorithm: str) -> Tuple[bool, str]:
-        """Verify original file hash matches manifest hash."""
-        try:
-            # Compute hash based on algorithm
-            algo_upper = algorithm.upper().replace("-", "")
+            if not isinstance(embedded_content, bytes):
+                logger.error(f"[VALIDATION] Unexpected content type: {type(embedded_content)}")
+                return None, False
 
-            if algo_upper == "SHA256":
-                computed = hashlib.sha256(file_content).hexdigest()
-            elif algo_upper == "SHA512":
-                computed = hashlib.sha512(file_content).hexdigest()
-            elif algo_upper == "SHA1":
-                computed = hashlib.sha1(file_content).hexdigest()
-            else:
-                logger.error(f"[VALIDATION] Unsupported hash algorithm: {algorithm}")
-                return False, ""
-
-            computed_upper = computed.upper()
-            expected_upper = expected_hash.upper()
-
-            match = computed_upper == expected_upper
-
-            if match:
-                logger.debug(f"[VALIDATION] ✓ File hash match: {computed_upper}")
-            else:
-                logger.error(f"[VALIDATION] × Hash mismatch. Computed: {computed_upper}, Expected: {expected_upper}")
-
-            return match, computed_upper
+            logger.debug(f"[VALIDATION] ✓ Extracted {len(embedded_content)} bytes from P7M")
+            return embedded_content, True
 
         except Exception as e:
-            logger.error(f"[VALIDATION] Error computing file hash: {str(e)}")
-            return False, ""
+            logger.error(f"[VALIDATION] Error extracting embedded file: {str(e)}")
+            return None, False
+
 
     def _verify_p7m_structure(self, p7s_content: bytes) -> Tuple[bool, Dict]:
         """Verify P7M/PKCS#7 structure integrity."""
@@ -242,11 +216,19 @@ class ValidationService:
             logger.error(f"[VALIDATION] Error parsing P7M structure: {str(e)}")
             return False, {}
 
-    def _verify_signature_cryptographic(self, manifest_content: bytes, p7s_content: bytes) -> Tuple[bool, Dict]:
-        """Verify signature cryptographically using certificate."""
+    def _verify_signature_cryptographic(self, file_content: bytes, p7m_file: bytes) -> Tuple[bool, Dict]:
+        """Verify signature cryptographically using certificate.
+
+        Args:
+            file_content: The original file content (or extracted embedded content from P7M)
+            p7m_file: The complete P7M file bytes
+
+        Returns:
+            Tuple of (verification_success, certificate_info)
+        """
         try:
             # Parse P7M
-            content_info = cms.ContentInfo.load(p7s_content)
+            content_info = cms.ContentInfo.load(p7m_file)
             signed_data = content_info['content']
 
             # Extract certificate
@@ -273,13 +255,13 @@ class ValidationService:
             public_key = cert.public_key()
 
             try:
-                # Compute manifest hash (what was signed)
-                manifest_hash = hashlib.sha256(manifest_content).digest()
+                # Compute file hash (what was signed by InfoCert)
+                file_hash = hashlib.sha256(file_content).digest()
 
                 # Verify signature
                 public_key.verify(
                     signature,
-                    manifest_hash,
+                    file_hash,
                     padding.PKCS1v15(),
                     hashes.SHA256()
                 )
@@ -343,25 +325,35 @@ class ValidationService:
             logger.error(f"[VALIDATION] Error validating certificate: {str(e)}")
             return False, {}
 
-    def quick_validate(self, original_file_content: bytes, manifest_content: bytes) -> bool:
+    def quick_validate(self, original_file_content: bytes, p7m_file: bytes) -> bool:
         """
-        Quick validation - just verify file hash matches manifest.
+        Quick validation - just verify embedded file matches original.
 
         Useful for fast integrity checks without full cryptographic verification.
 
         Args:
             original_file_content: Original file bytes
-            manifest_content: Manifest JSON bytes
+            p7m_file: P7M file bytes
 
         Returns:
-            True if hash matches, False otherwise
+            True if embedded file matches original, False otherwise
         """
         try:
-            manifest = json.loads(manifest_content.decode('utf-8'))
-            expected_hash = manifest.get("hash", "")
-            algorithm = manifest.get("algorithm", "SHA256")
+            # Extract embedded file from P7M
+            extracted_file, ok = self._extract_embedded_file(p7m_file)
 
-            match, _ = self._verify_file_hash(original_file_content, expected_hash, algorithm)
+            if not ok or extracted_file is None:
+                logger.error("[VALIDATION] Quick validation failed: could not extract embedded file")
+                return False
+
+            # Compare bytes
+            match = extracted_file == original_file_content
+
+            if match:
+                logger.debug("[VALIDATION] ✓ Quick validation passed: embedded file matches original")
+            else:
+                logger.error("[VALIDATION] × Quick validation failed: embedded file does not match original")
+
             return match
 
         except Exception as e:

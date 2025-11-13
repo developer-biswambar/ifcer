@@ -320,20 +320,20 @@ async def download_signed_file(
     signed_file_key: Optional[str] = Query(None, description="Signed file S3 key")
 ):
     """
-    Download the signed file (manifest.json or manifest.p7s) from S3.
+    Download the P7M signed file from S3.
 
     You can provide either:
-    - original_file_key: The key of the original file (will look up signed file in DynamoDB)
-    - signed_file_key: The direct key of the signed file in S3
+    - original_file_key: The key of the original file (will look up P7M file in DynamoDB)
+    - signed_file_key: The direct key of the P7M file in S3
 
-    The signed files are typically stored in the "signed/" folder.
+    The P7M files are stored in the "signed/" folder with .p7m extension.
 
     Args:
         original_file_key: Original file S3 key (e.g., "uploads/document.txt")
-        signed_file_key: Signed file S3 key (e.g., "signed/document.json" or "signed/document.p7s")
+        signed_file_key: P7M file S3 key (e.g., "signed/document.p7m")
 
     Returns:
-        StreamingResponse: Signed file content with appropriate headers
+        StreamingResponse: P7M file content with appropriate headers
 
     Raises:
         HTTPException: If file not found, not signed, or download fails
@@ -395,8 +395,10 @@ async def download_signed_file(
         # Determine media type based on file extension
         if filename.endswith(".json"):
             media_type = "application/json"
-        elif filename.endswith(".p7s") or filename.endswith(".p7m"):
-            media_type = "application/pkcs7-signature"
+        elif filename.endswith(".p7m"):
+            media_type = "application/pkcs7-mime"  # ENVELOPED signature with embedded content
+        elif filename.endswith(".p7s"):
+            media_type = "application/pkcs7-signature"  # DETACHED signature
         else:
             media_type = "application/octet-stream"
 
