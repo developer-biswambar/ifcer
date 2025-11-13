@@ -495,10 +495,10 @@ class SignatureService:
             signing_time = datetime.now(timezone.utc)
 
             signature_response = SignatureResponse(
-                signature=p7s_content_b64[:100],  # Store first 100 chars for reference
+                signature=raw_signature_b64[:100],  # Store first 100 chars for reference
                 timestamp=signing_time,
                 manifest_content=manifest_bytes,  # The manifest JSON as bytes
-                p7m_content=p7s_bytes,  # The detached signature (.p7s)
+                p7m_content=p7s_bytes,  # The complete P7M file built from raw signature
             )
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
