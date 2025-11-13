@@ -202,11 +202,15 @@ class ValidationService:
 
             signed_data = content_info['content']
 
+            # Count certificates and signers (asn1crypto objects don't support .get())
+            cert_count = len(signed_data['certificates']) if signed_data['certificates'] else 0
+            signer_count = len(signed_data['signer_infos']) if signed_data['signer_infos'] else 0
+
             p7m_data = {
                 "version": signed_data['version'].native,
                 "digest_algorithms": [algo['algorithm'].native for algo in signed_data['digest_algorithms']],
-                "certificate_count": len(signed_data.get('certificates', [])),
-                "signer_count": len(signed_data.get('signer_infos', []))
+                "certificate_count": cert_count,
+                "signer_count": signer_count
             }
 
             logger.debug(f"[VALIDATION] ✓ P7M structure valid: {p7m_data}")
@@ -232,7 +236,7 @@ class ValidationService:
             signed_data = content_info['content']
 
             # Extract certificate
-            if not signed_data.get('certificates') or len(signed_data['certificates']) == 0:
+            if not signed_data['certificates'] or len(signed_data['certificates']) == 0:
                 logger.error("[VALIDATION] No certificates found in P7M")
                 return False, {}
 
@@ -244,7 +248,7 @@ class ValidationService:
             cert = x509.load_der_x509_certificate(cert_der, default_backend())
 
             # Extract signer info
-            if not signed_data.get('signer_infos') or len(signed_data['signer_infos']) == 0:
+            if not signed_data['signer_infos'] or len(signed_data['signer_infos']) == 0:
                 logger.error("[VALIDATION] No signer info found in P7M")
                 return False, {}
 
