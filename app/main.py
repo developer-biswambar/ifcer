@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import processing, files
+from app.routers import processing, files, certificates
 from app.utils.logger import setup_logger, log_exception
 from app import __version__
 
@@ -21,6 +21,7 @@ app = FastAPI(
 # Include routers
 app.include_router(processing.router, tags=["Processing"])
 app.include_router(files.router, tags=["Files"])
+app.include_router(certificates.router, tags=["Certificates"])
 
 
 @app.get("/", response_model=dict)
