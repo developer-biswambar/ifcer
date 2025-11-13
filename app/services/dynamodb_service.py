@@ -98,7 +98,8 @@ class DynamoDBService:
             )
 
             item = {
-                "file_key": file_key,
+                "Id": file_key,  # Primary key - using file_key as unique identifier
+                "file_key": file_key,  # Keep for reference
                 "processing_timestamp": processing_timestamp,
                 "filename": filename,
                 "date_partition": date_partition,
@@ -151,26 +152,23 @@ class DynamoDBService:
 
     def get_certification(self, file_key: str) -> Optional[Dict[str, Any]]:
         """
-        Get the most recent certification for a file.
+        Get the certification for a file.
 
         Args:
-            file_key: Original S3 file key
+            file_key: Original S3 file key (used as Id)
 
         Returns:
             Certification metadata dict or None if not found
         """
         try:
-            response = self.table.query(
-                KeyConditionExpression="file_key = :file_key",
-                ExpressionAttributeValues={":file_key": file_key},
-                ScanIndexForward=False,  # Sort descending (most recent first)
-                Limit=1,
+            response = self.table.get_item(
+                Key={"Id": file_key}
             )
 
-            items = response.get("Items", [])
-            if items:
+            item = response.get("Item")
+            if item:
                 logger.debug(f"Found certification for: {file_key}")
-                return self._convert_decimals(items[0])
+                return self._convert_decimals(item)
 
             logger.debug(f"No certification found for: {file_key}")
             return None
