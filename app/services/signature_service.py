@@ -281,25 +281,35 @@ class SignatureService:
             response.raise_for_status()
             cert_data = response.json()
 
-            # Extract certificate content from response
-            # InfoCert may return certificate in various formats - handle accordingly
-            if "certificate" in cert_data:
-                cert_content = cert_data["certificate"]
-                if isinstance(cert_content, str):
-                    # If base64 encoded
-                    cert_bytes = base64.b64decode(cert_content)
-                    logger.debug(f"[CERT FETCH] Certificate decoded from base64: {len(cert_bytes)} bytes")
-                    return cert_bytes
-                elif isinstance(cert_content, dict) and "content" in cert_content:
-                    # If nested in content field
-                    cert_b64 = cert_content["content"]
-                    cert_bytes = base64.b64decode(cert_b64)
-                    logger.debug(f"[CERT FETCH] Certificate decoded from nested content: {len(cert_bytes)} bytes")
-                    return cert_bytes
+            # Response is a list of certificates
+            if not isinstance(cert_data, list) or len(cert_data) == 0:
+                logger.error(f"[CERT FETCH] Expected list of certificates, got: {type(cert_data)}")
+                raise ValueError("InfoCert API returned invalid certificate list")
 
-            # If we reach here, format is unexpected
-            logger.error(f"[CERT FETCH] Unexpected certificate response format: {list(cert_data.keys())}")
-            raise ValueError(f"Unexpected certificate response format from InfoCert")
+            # Get first active certificate
+            active_cert = None
+            for cert in cert_data:
+                if cert.get("status") == "active":
+                    active_cert = cert
+                    break
+
+            # If no active certificate found, use the first one
+            if not active_cert:
+                logger.warning("[CERT FETCH] No active certificate found, using first certificate")
+                active_cert = cert_data[0]
+
+            logger.debug(f"[CERT FETCH] Using certificate - Subject: {active_cert.get('subject')}, Status: {active_cert.get('status')}")
+
+            # Extract certificate content (base64 encoded string)
+            cert_b64 = active_cert.get("certificate")
+            if not cert_b64:
+                logger.error(f"[CERT FETCH] Certificate object missing 'certificate' field: {list(active_cert.keys())}")
+                raise ValueError("Certificate object does not contain 'certificate' field")
+
+            # Decode base64 certificate
+            cert_bytes = base64.b64decode(cert_b64)
+            logger.debug(f"[CERT FETCH] Certificate decoded from base64: {len(cert_bytes)} bytes")
+            return cert_bytes
 
         except Exception as e:
             log_exception(logger, e, "Failed to fetch signing certificate from InfoCert")
