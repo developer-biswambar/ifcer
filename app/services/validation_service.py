@@ -32,38 +32,32 @@ class ValidationService:
     def validate_signature(
         self,
         original_file_content: bytes,
-        manifest_content: bytes,
-        p7s_signature: bytes,
-        expected_filename: Optional[str] = None
+        p7m_file: bytes
     ) -> Dict[str, Any]:
         """
-        Comprehensive validation of signed file against original (regulatory validation).
+        Comprehensive validation of P7M file with embedded content (regulatory validation).
 
         This performs the same validation that Italian regulatory authorities would perform:
-        1. Verify original file hash matches manifest
-        2. Verify manifest structure and content
-        3. Verify P7M signature structure
+        1. Verify P7M signature structure
+        2. Extract embedded file from P7M
+        3. Verify extracted file matches original file
         4. Verify signature cryptographically
         5. Extract and validate certificate information
 
         Args:
-            original_file_content: Original file bytes
-            manifest_content: Manifest JSON bytes
-            p7s_signature: P7M/P7S signature file bytes
-            expected_filename: Optional filename to verify in manifest
+            original_file_content: Original file bytes (for verification)
+            p7m_file: P7M file bytes (ENVELOPED signature with embedded file)
 
         Returns:
             Validation result dictionary:
             {
                 "valid": bool,
                 "checks": {
-                    "manifest_structure": bool,
-                    "file_hash_match": bool,
                     "signature_structure": bool,
+                    "embedded_file_match": bool,
                     "signature_verified": bool,
                     "certificate_valid": bool
                 },
-                "manifest_data": {...},
                 "certificate_info": {...},
                 "errors": [...]
             }

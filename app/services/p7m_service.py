@@ -19,26 +19,27 @@ class P7MService:
     """Service for building P7M (PKCS#7/CAdES) signature files."""
 
     def create_p7m_from_signature(
-        self, manifest_content: bytes, signature_bytes: bytes, cert_der_bytes: bytes
+        self, file_content: bytes, signature_bytes: bytes, cert_der_bytes: bytes
     ) -> bytes:
         """
-        Create a P7M (PKCS#7/CAdES) file from manifest content, signature, and certificate.
+        Create a P7M (PKCS#7/CAdES ENVELOPED) file with original file embedded.
 
-        This is used with InfoCert hashSignatures API, which returns:
-        - RAW signature bytes (not complete P7M)
-        - We fetch the certificate separately
-        - We build the complete P7M ourselves
+        This is used with InfoCert hashSignatures API workflow:
+        1. Original file hash is sent to InfoCert
+        2. InfoCert returns RAW signature bytes of the hash
+        3. We fetch the certificate separately from InfoCert
+        4. We build the complete P7M with ORIGINAL FILE EMBEDDED
 
         This creates a CAdES-BES (Basic Electronic Signature) structure which is
-        a PKCS#7 SignedData containing the signed manifest.
+        a PKCS#7 SignedData with ENVELOPED content (file embedded inside).
 
         Args:
-            manifest_content: The manifest JSON as bytes
+            file_content: The ORIGINAL FILE content as bytes (to be embedded in P7M)
             signature_bytes: The RAW signature bytes from InfoCert hashSignatures response
             cert_der_bytes: The DER-encoded signing certificate fetched from InfoCert
 
         Returns:
-            Complete P7M file as bytes (DER-encoded PKCS#7 SignedData)
+            Complete P7M file as bytes (DER-encoded PKCS#7 SignedData with embedded file)
 
         Raises:
             ValueError: If P7M creation fails
@@ -46,7 +47,7 @@ class P7MService:
         try:
             logger.debug(
                 f"[P7M CREATE] Starting P7M creation | "
-                f"Manifest: {len(manifest_content)} bytes | "
+                f"File content: {len(file_content)} bytes | "
                 f"Signature: {len(signature_bytes)} bytes | "
                 f"Certificate: {len(cert_der_bytes)} bytes"
             )
@@ -56,11 +57,11 @@ class P7MService:
             cert = asn1_x509.Certificate.load(cert_der_bytes)
             logger.debug(f"[P7M CREATE] Certificate parsed successfully")
 
-            # Create ContentInfo for the manifest (encapContentInfo)
-            logger.debug("[P7M CREATE] Building ContentInfo with manifest data...")
+            # Create ContentInfo with ORIGINAL FILE embedded (ENVELOPED signature)
+            logger.debug("[P7M CREATE] Building ContentInfo with ORIGINAL FILE embedded...")
             encap_content_info = cms.ContentInfo({
                 'content_type': cms.ContentType('data'),
-                'content': core.OctetString(manifest_content)
+                'content': core.OctetString(file_content)  # Embed original file content
             })
 
             # Get certificate hash for signer identifier

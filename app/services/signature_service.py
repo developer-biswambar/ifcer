@@ -39,30 +39,32 @@ class SignatureService:
 
         logger.info(f"Signature service initialized | API: {self.api_url}")
 
-    def sign_file_hash(self, signature_request: SignatureRequest) -> SignatureResponse:
+    def sign_file_hash(self, signature_request: SignatureRequest, original_file_content: bytes) -> SignatureResponse:
         """
-        Create and sign a manifest file containing the file hash using InfoCert hashSignatures API.
+        Sign original file hash using InfoCert hashSignatures API and create P7M with embedded content.
 
         Workflow:
-        1. Create manifest JSON containing file hash and metadata
-        2. Compute SHA-256 hash of the manifest
-        3. Send manifest hash to InfoCert hashSignatures API
-        4. InfoCert returns RAW signature bytes + optional timestamp
-        5. Fetch signing certificate from InfoCert
-        6. Build complete P7M file from: manifest + raw signature + certificate
+        1. Send original file hash to InfoCert hashSignatures API
+        2. InfoCert returns RAW signature bytes + optional timestamp
+        3. Fetch signing certificate from InfoCert
+        4. Build complete P7M file with ORIGINAL FILE EMBEDDED
 
-        The .p7s file contains the DETACHED signature of the manifest hash.
-        Verification requires TWO files:
-        - manifest.json (original manifest)
-        - manifest.p7s (detached signature)
+        The .p7m file contains:
+        - Original file content (embedded)
+        - Signature of original file hash
+        - Certificate
+        - Timestamp
+
+        Result: Single P7M file (no separate manifest needed)
 
         Authentication: mTLS + Bearer SAT token + X-signer-id + PIN
 
         Args:
             signature_request: SignatureRequest object with file hash details
+            original_file_content: Original file content as bytes (to be embedded in P7M)
 
         Returns:
-            SignatureResponse with detached signature (.p7s) and timestamp
+            SignatureResponse with P7M file content and timestamp
 
         Raises:
             RequestException: If API request fails
@@ -74,36 +76,23 @@ class SignatureService:
             logger.info(
                 f"[SIGN START] File: {signature_request.filename} | "
                 f"Hash: {signature_request.file_hash[:16]}... | "
-                f"Algorithm: {signature_request.hash_algorithm}"
+                f"Algorithm: {signature_request.hash_algorithm} | "
+                f"Size: {len(original_file_content)} bytes"
             )
 
-            # Step 1: Create manifest JSON
-            logger.debug(f"[STEP 1/5] Creating manifest JSON for {signature_request.filename}")
-            manifest = {
-                "fileName": signature_request.filename,
-                "algorithm": signature_request.hash_algorithm.upper(),
-                "hash": signature_request.file_hash,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+            # Step 1: Convert file hash to base64 (InfoCert expects base64)
+            logger.debug(f"[STEP 1/4] Preparing file hash for InfoCert API")
+            file_hash_bytes = bytes.fromhex(signature_request.file_hash)
+            file_hash_b64 = base64.b64encode(file_hash_bytes).decode('ascii')
+            logger.info(f"[STEP 1/4] File hash (base64): {file_hash_b64[:32]}...")
 
-            manifest_json = json.dumps(manifest, indent=2)
-            manifest_bytes = manifest_json.encode('utf-8')
-            logger.info(f"[STEP 1/5] Created manifest: {len(manifest_bytes)} bytes")
-            logger.debug(f"Manifest content:\n{manifest_json}")
-
-            # Step 2: Compute SHA-256 hash of the manifest
-            logger.debug(f"[STEP 2/5] Computing SHA-256 hash of manifest")
-            manifest_hash = hashlib.sha256(manifest_bytes).digest()
-            manifest_hash_b64 = base64.b64encode(manifest_hash).decode('ascii')
-            logger.info(f"[STEP 2/5] Manifest hash: {manifest_hash_b64[:32]}...")
-
-            # Step 3: Create session with mTLS
-            logger.debug(f"[STEP 3/5] Creating mTLS session for InfoCert API")
+            # Step 2: Create session with mTLS
+            logger.debug(f"[STEP 2/4] Creating mTLS session for InfoCert API")
             session = self.cert_service._create_session()
-            logger.info(f"[STEP 3/5] mTLS session established")
+            logger.info(f"[STEP 2/4] mTLS session established")
 
-            # Step 4: Send hash to InfoCert hashSignatures API
-            logger.debug(f"[STEP 4/5] Preparing InfoCert hashSignatures API request")
+            # Step 3: Send original file hash to InfoCert hashSignatures API
+            logger.debug(f"[STEP 3/4] Preparing InfoCert hashSignatures API request")
 
             payload = {
                 "applicationId": "ifcer-batch-service",
@@ -112,16 +101,16 @@ class SignatureService:
                     "sat": settings.infocert_sat
                 },
                 "hashSignatures": [{
-                    "requestId": f"manifest-{signature_request.filename}",
-                    "hash": manifest_hash_b64,
+                    "requestId": f"file-{signature_request.filename}",
+                    "hash": file_hash_b64,
                     "withTimestamp": True
                 }]
             }
 
             endpoint_url = f"{self.api_url}/certificates/{settings.infocert_certificate_id}/sign"
 
-            logger.info(f"[STEP 4/5] Sending manifest hash to InfoCert for signing...")
-            logger.debug(f"[STEP 4/5] API URL: {endpoint_url}")
+            logger.info(f"[STEP 3/4] Sending original file hash to InfoCert for signing...")
+            logger.debug(f"[STEP 3/4] API URL: {endpoint_url}")
 
             response = session.post(
                 endpoint_url,
@@ -135,7 +124,7 @@ class SignatureService:
             )
 
             response.raise_for_status()
-            logger.info(f"[STEP 4/5] Received response from InfoCert (HTTP {response.status_code})")
+            logger.info(f"[STEP 3/4] Received response from InfoCert (HTTP {response.status_code})")
 
             # Parse response
             response_data = response.json()
@@ -161,7 +150,7 @@ class SignatureService:
             if not raw_signature_b64:
                 raise ValueError("InfoCert API did not return signed document content")
 
-            logger.info(f"[STEP 4/5] Received RAW signature bytes ({len(raw_signature_b64)} chars base64)")
+            logger.info(f"[STEP 3/4] Received RAW signature bytes ({len(raw_signature_b64)} chars base64)")
 
             raw_signature_bytes = base64.b64decode(raw_signature_b64)
 
@@ -169,21 +158,21 @@ class SignatureService:
             signed_timestamp = result.get("signedTimestamp", {})
             if signed_timestamp:
                 timestamp_b64 = signed_timestamp.get("content", "")
-                logger.debug(f"[STEP 4/5] Timestamp included: {len(timestamp_b64)} chars")
+                logger.debug(f"[STEP 3/4] Timestamp included: {len(timestamp_b64)} chars")
 
-            # Step 5: Fetch signing certificate and build P7M
-            logger.debug(f"[STEP 5/5] Fetching signing certificate from InfoCert")
+            # Step 4: Fetch signing certificate and build P7M with original file embedded
+            logger.debug(f"[STEP 4/4] Fetching signing certificate from InfoCert")
             cert_der_bytes = self.cert_service.get_signing_certificate_bytes()
-            logger.info(f"[STEP 5/5] Certificate fetched: {len(cert_der_bytes)} bytes")
+            logger.info(f"[STEP 4/4] Certificate fetched: {len(cert_der_bytes)} bytes")
 
-            # Build complete P7M file
-            logger.debug(f"[STEP 5/5] Building P7M file from raw signature and certificate")
-            p7s_bytes = self.p7m_service.create_p7m_from_signature(
-                manifest_content=manifest_bytes,
+            # Build complete P7M file with ORIGINAL FILE EMBEDDED
+            logger.debug(f"[STEP 4/4] Building P7M file with original file embedded ({len(original_file_content)} bytes)")
+            p7m_bytes = self.p7m_service.create_p7m_from_signature(
+                file_content=original_file_content,  # Embed original file, NOT manifest
                 signature_bytes=raw_signature_bytes,
                 cert_der_bytes=cert_der_bytes
             )
-            logger.info(f"[STEP 5/5] P7M file created: {len(p7s_bytes)} bytes")
+            logger.info(f"[STEP 4/4] P7M file created: {len(p7m_bytes)} bytes (includes embedded file)")
 
             # Create response
             signing_time = datetime.now(timezone.utc)
@@ -191,14 +180,15 @@ class SignatureService:
             signature_response = SignatureResponse(
                 signature=raw_signature_b64[:100],  # Store first 100 chars for reference
                 timestamp=signing_time,
-                manifest_content=manifest_bytes,  # The manifest JSON as bytes
-                p7m_content=p7s_bytes,  # The complete P7M file built from raw signature
+                manifest_content=None,  # No manifest - we embed original file instead
+                p7m_content=p7m_bytes,  # The complete P7M file with embedded original content
             )
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(
                 f"[SIGN COMPLETE] File: {signature_request.filename} | "
-                f"Signature size (.p7s): {len(p7s_bytes)} bytes | "
+                f"P7M size: {len(p7m_bytes)} bytes | "
+                f"Original file: {len(original_file_content)} bytes | "
                 f"Duration: {elapsed:.2f}s | "
                 f"Timestamp: {signature_response.timestamp.isoformat()}"
             )
