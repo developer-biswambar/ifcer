@@ -35,6 +35,7 @@ import requests
 from requests.exceptions import RequestException, Timeout, SSLError
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
+from asn1crypto import cms, core, x509 as asn1_x509, algos
 
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
@@ -311,41 +312,37 @@ class SignatureService:
             session = self._create_session()
             logger.info(f"[STEP 3/5] mTLS session established")
 
-            # Step 4: Prepare request payload for InfoCert CAdES Sign API with digest
-            logger.debug(f"[STEP 4/5] Preparing InfoCert CAdES API request with digest")
+            # Step 4: Prepare request payload for InfoCert hashSignatures API
+            logger.debug(f"[STEP 4/5] Preparing InfoCert hashSignatures API request")
 
-            # Use certificate ID (same as X-signer-id)
-            certificate_id = settings.infocert_credential_id
+            # Use certificate ID from settings
+            certificate_id = settings.infocert_certificate_id
 
             payload = {
                 "applicationId": "ifcer-batch-service",
-                "cadesSignatures": [{
-                    "signatureLevel": "BASELINE-B",  # CAdES-BASELINE-B
+                "pin": settings.infocert_pin,
+                "hashSignatures": [{
                     "requestId": f"manifest-{signature_request.filename}",
-                    "document": {
-                        "digest": {
-                            "content": manifest_hash_b64,
-                            "algo": "SHA-256"
-                        }
-                    },
-                    "packaging": "DETACHED"  # DETACHED for hash-only signing (separate .p7s file)
+                    "hash": manifest_hash_b64,
+                    "withTimestamp": "true"  # STRING "true", not boolean!
                 }]
             }
 
             # Build endpoint URL with certificate ID
             endpoint_url = f"{self.api_url}/certificates/{certificate_id}/sign"
 
-            logger.info(f"[STEP 4/5] Sending manifest hash to InfoCert API for CAdES DETACHED signing...")
+            logger.info(f"[STEP 4/5] Sending manifest hash to InfoCert API for hash signing...")
             logger.debug(f"[STEP 4/5] API URL: {endpoint_url}")
             logger.debug(f"[STEP 4/5] Certificate ID: {certificate_id}")
-            logger.debug(f"[STEP 4/5] Packaging: DETACHED (separate .p7s file)")
+            logger.debug(f"[STEP 4/5] With Timestamp: true")
             logger.debug(f"[STEP 4/5] Request ID: manifest-{signature_request.filename}")
 
-            # Make API request to InfoCert API with X-signer-id header
+            # Make API request to InfoCert API with mTLS, SAT Bearer token, and X-signer-id header
             response = session.post(
                 endpoint_url,
                 json=payload,
                 headers={
+                    "Authorization": f"Bearer {settings.infocert_sat}",
                     "X-signer-id": settings.infocert_credential_id,
                     "Content-Type": "application/json"
                 },

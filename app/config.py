@@ -61,20 +61,24 @@ class Settings(BaseSettings):
     dynamodb_ttl_days: Optional[int] = None  # Optional: Auto-delete records after N days
 
     # ==================== InfoCert API Settings ====================
-    # Loaded from: INFOCERT_API_URL, INFOCERT_CREDENTIAL_ID,
+    # Loaded from: INFOCERT_API_URL, INFOCERT_CREDENTIAL_ID, INFOCERT_CERTIFICATE_ID,
+    #              INFOCERT_PIN, INFOCERT_SAT,
     #              VENDOR_MTLS_P12_S3_KEY, VENDOR_MTLS_P12_PASSWORD (or PEM files)
     #
-    # InfoCert uses a single mTLS API endpoint for all operations (authentication, signing, etc.)
+    # InfoCert uses mTLS API endpoint with hashSignatures for signing document hashes
     # Certificates are stored in S3 and loaded during application startup
     #
     # ENVIRONMENTS:
     #   STAGE:      https://mtlsapistage.infocert.digital/signature/v1
     #   PRODUCTION: https://mtlsapi.infocert.digital/signature/v1
     #
-    # Signing endpoint: /multi/sign
+    # Signing endpoint: /certificates/{certificateId}/sign with hashSignatures
     #
     infocert_api_url: str  # REQUIRED - InfoCert mTLS API base URL
-    infocert_credential_id: str  # REQUIRED - InfoCert credential ID (X-signer-id header, e.g., MA0001)
+    infocert_credential_id: str  # REQUIRED - InfoCert credential ID (X-signer-id header, e.g., MA556902)
+    infocert_certificate_id: str  # REQUIRED - Certificate ID for signing (path parameter)
+    infocert_pin: str  # REQUIRED - PIN for automatic signature certificate
+    infocert_sat: str  # REQUIRED - SAT (Signature Activation Token) - long-lived JWT token
 
     # OPTION 1: P12 certificate (recommended - simpler setup)
     vendor_mtls_p12_s3_key: Optional[str] = None  # S3 key for P12 file (e.g., certs/client_cert.p12)
