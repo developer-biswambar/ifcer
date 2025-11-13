@@ -1,8 +1,10 @@
-"""File query endpoints for certification status."""
+"""File query and download endpoints for certification status."""
 
-from fastapi import APIRouter, HTTPException
-from typing import List
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from typing import List, Optional
 import os
+import io
 
 from app.models.schemas import (
     FileDetailsRequest,
@@ -259,3 +261,158 @@ async def get_files_list(request: FileListRequest):
     except Exception as e:
         log_exception(logger, e, "Failed to get files list")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/download/original")
+async def download_original_file(
+    file_key: str = Query(..., description="Original file S3 key (e.g., uploads/document.txt)")
+):
+    """
+    Download the original file from S3.
+
+    This endpoint allows you to download the original file using its S3 key.
+    The file is streamed directly from S3 to the client.
+
+    Args:
+        file_key: S3 key of the original file (e.g., "uploads/document.txt")
+
+    Returns:
+        StreamingResponse: File content with appropriate headers for download
+
+    Raises:
+        HTTPException: If file not found or download fails
+    """
+    try:
+        logger.info(f"[DOWNLOAD ORIGINAL] Downloading file: {file_key}")
+
+        # Check if file exists
+        if not s3_service.file_exists(file_key):
+            logger.warning(f"[DOWNLOAD ORIGINAL] File not found: {file_key}")
+            raise HTTPException(status_code=404, detail=f"File not found: {file_key}")
+
+        # Download file from S3
+        file_content = s3_service.download_file(file_key)
+
+        # Extract filename from key
+        filename = os.path.basename(file_key)
+
+        logger.info(f"[DOWNLOAD ORIGINAL] ✓ Downloaded file: {file_key} ({len(file_content)} bytes)")
+
+        # Return file as streaming response
+        return StreamingResponse(
+            io.BytesIO(file_content),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_exception(logger, e, f"Failed to download original file: {file_key}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+
+
+@router.get("/download/signed")
+async def download_signed_file(
+    original_file_key: Optional[str] = Query(None, description="Original file S3 key"),
+    signed_file_key: Optional[str] = Query(None, description="Signed file S3 key")
+):
+    """
+    Download the signed file (manifest.json or manifest.p7s) from S3.
+
+    You can provide either:
+    - original_file_key: The key of the original file (will look up signed file in DynamoDB)
+    - signed_file_key: The direct key of the signed file in S3
+
+    The signed files are typically stored in the "signed/" folder.
+
+    Args:
+        original_file_key: Original file S3 key (e.g., "uploads/document.txt")
+        signed_file_key: Signed file S3 key (e.g., "signed/document.json" or "signed/document.p7s")
+
+    Returns:
+        StreamingResponse: Signed file content with appropriate headers
+
+    Raises:
+        HTTPException: If file not found, not signed, or download fails
+    """
+    try:
+        # Validate that at least one key is provided
+        if not original_file_key and not signed_file_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'original_file_key' or 'signed_file_key'"
+            )
+
+        # If original_file_key is provided, look up signed file in DynamoDB
+        if original_file_key:
+            logger.info(f"[DOWNLOAD SIGNED] Looking up signed file for: {original_file_key}")
+
+            cert_data = dynamodb_service.get_certification(original_file_key)
+
+            if not cert_data:
+                logger.warning(f"[DOWNLOAD SIGNED] No certification record found: {original_file_key}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No certification record found for: {original_file_key}"
+                )
+
+            if cert_data.get("status") != "completed":
+                status = cert_data.get("status", "unknown")
+                logger.warning(f"[DOWNLOAD SIGNED] File not signed (status: {status}): {original_file_key}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File has not been successfully signed. Status: {status}"
+                )
+
+            signed_file_key = cert_data.get("signed_file_key")
+
+            if not signed_file_key:
+                logger.error(f"[DOWNLOAD SIGNED] Certification record missing signed_file_key: {original_file_key}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Certification record is missing signed file key"
+                )
+
+        logger.info(f"[DOWNLOAD SIGNED] Downloading signed file: {signed_file_key}")
+
+        # Check if signed file exists
+        if not s3_service.file_exists(signed_file_key):
+            logger.warning(f"[DOWNLOAD SIGNED] Signed file not found in S3: {signed_file_key}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Signed file not found in S3: {signed_file_key}"
+            )
+
+        # Download signed file from S3
+        file_content = s3_service.download_file(signed_file_key)
+
+        # Extract filename from key
+        filename = os.path.basename(signed_file_key)
+
+        # Determine media type based on file extension
+        if filename.endswith(".json"):
+            media_type = "application/json"
+        elif filename.endswith(".p7s") or filename.endswith(".p7m"):
+            media_type = "application/pkcs7-signature"
+        else:
+            media_type = "application/octet-stream"
+
+        logger.info(f"[DOWNLOAD SIGNED] ✓ Downloaded signed file: {signed_file_key} ({len(file_content)} bytes)")
+
+        # Return file as streaming response
+        return StreamingResponse(
+            io.BytesIO(file_content),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_exception(logger, e, f"Failed to download signed file")
+        raise HTTPException(status_code=500, detail=f"Failed to download signed file: {str(e)}")
