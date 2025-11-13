@@ -13,7 +13,7 @@ import base64
 import hashlib
 import json
 from typing import Dict, Any, Tuple, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from asn1crypto import cms, x509 as asn1_x509
 from cryptography import x509
@@ -62,7 +62,7 @@ class ValidationService:
                 "errors": [...]
             }
         """
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         result = {
             "valid": False,
             "checks": {
@@ -145,7 +145,7 @@ class ValidationService:
 
             # All checks passed
             result["valid"] = True
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(f"[VALIDATION] ✓ All validation checks passed ({elapsed:.2f}s)")
 
             return result
@@ -340,7 +340,7 @@ class ValidationService:
 
             # Check validity dates
             if "not_valid_before" in cert_info and "not_valid_after" in cert_info:
-                now = datetime.now()
+                now = datetime.now(timezone.utc)  # Use UTC timezone
                 not_before = datetime.fromisoformat(cert_info["not_valid_before"])
                 not_after = datetime.fromisoformat(cert_info["not_valid_after"])
 
