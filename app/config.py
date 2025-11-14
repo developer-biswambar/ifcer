@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     # If not set, notifications are disabled
     notification_sns_topic_arn: Optional[str] = None  # AWS SNS topic ARN for notifications
 
+    # ==================== Certificate Caching Settings ====================
+    # Loaded from: CERTIFICATE_CACHE_TTL_SECONDS
+    # Cache signing certificate fetched from InfoCert to avoid repeated API calls
+    # Default: 3600 seconds (1 hour)
+    # Set to 0 to disable caching
+    certificate_cache_ttl_seconds: int = 3600  # Cache TTL in seconds
+
     class Config:
         """Pydantic settings configuration."""
         # Load from .env file if it exists (for local development)

@@ -4,12 +4,14 @@ This service handles certificate-related operations including:
 - Fetching certificates from InfoCert
 - Retrieving active certificates
 - Decoding certificate data
+- Caching signing certificates to reduce API calls
 """
 
 import base64
 import tempfile
 import os
-from typing import List, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any, Optional
 
 import boto3
 import requests
@@ -31,9 +33,20 @@ class CertificateService:
         self.api_url = settings.infocert_api_url
         self.timeout = settings.request_timeout
 
+        # Certificate caching
+        self._cached_certificate_bytes: Optional[bytes] = None
+        self._cache_expiry: Optional[datetime] = None
+        self._cache_ttl_seconds = settings.certificate_cache_ttl_seconds
+
         # Download and setup mTLS certificates
         logger.info(f"Loading mTLS certificates from S3 bucket: {settings.s3_bucket_name}")
         self._setup_mtls_certificates()
+
+        # Log cache configuration
+        if self._cache_ttl_seconds > 0:
+            logger.info(f"Certificate caching enabled with TTL: {self._cache_ttl_seconds}s ({self._cache_ttl_seconds/60:.1f} minutes)")
+        else:
+            logger.info("Certificate caching disabled (TTL=0)")
 
     def _setup_mtls_certificates(self):
         """Download mTLS certificates from S3 and store as temporary files."""
@@ -237,10 +250,16 @@ class CertificateService:
 
     def get_signing_certificate_bytes(self) -> bytes:
         """
-        Fetch the signing certificate as DER-encoded bytes.
+        Fetch the signing certificate as DER-encoded bytes with caching.
 
         This retrieves the first active certificate from InfoCert and returns
         it as DER-encoded bytes for use in P7M building.
+
+        Caching behavior:
+        - Cache is enabled if CERTIFICATE_CACHE_TTL_SECONDS > 0
+        - Cached certificate is returned if not expired
+        - Cache is refreshed when expired or on first fetch
+        - Cache hit/miss is logged for monitoring
 
         Returns:
             DER-encoded certificate bytes
@@ -250,6 +269,27 @@ class CertificateService:
             ValueError: If certificate cannot be retrieved
         """
         try:
+            # Check cache if enabled (TTL > 0)
+            if self._cache_ttl_seconds > 0:
+                now = datetime.now(timezone.utc)
+
+                # Return cached certificate if valid
+                if self._cached_certificate_bytes and self._cache_expiry:
+                    if now < self._cache_expiry:
+                        time_remaining = (self._cache_expiry - now).total_seconds()
+                        logger.debug(
+                            f"[CERT CACHE HIT] Using cached certificate | "
+                            f"Expires in: {time_remaining:.0f}s ({time_remaining/60:.1f} minutes)"
+                        )
+                        return self._cached_certificate_bytes
+                    else:
+                        logger.debug("[CERT CACHE EXPIRED] Cache expired, refreshing certificate")
+                else:
+                    logger.debug("[CERT CACHE MISS] No cached certificate, fetching from InfoCert")
+            else:
+                logger.debug("[CERT CACHE DISABLED] Fetching certificate from InfoCert (caching disabled)")
+
+            # Fetch certificate from InfoCert API
             logger.debug("[CERT FETCH] Fetching signing certificate from InfoCert")
 
             # Create session with mTLS
@@ -297,7 +337,18 @@ class CertificateService:
 
             # Decode base64 certificate
             cert_bytes = base64.b64decode(cert_b64)
-            logger.debug(f"[CERT FETCH] Certificate decoded from base64: {len(cert_bytes)} bytes")
+            logger.info(f"[CERT FETCH] ✓ Certificate fetched from InfoCert | Size: {len(cert_bytes)} bytes")
+
+            # Update cache if enabled
+            if self._cache_ttl_seconds > 0:
+                self._cached_certificate_bytes = cert_bytes
+                self._cache_expiry = datetime.now(timezone.utc) + timedelta(seconds=self._cache_ttl_seconds)
+                logger.info(
+                    f"[CERT CACHE UPDATED] Certificate cached | "
+                    f"TTL: {self._cache_ttl_seconds}s | "
+                    f"Expires at: {self._cache_expiry.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                )
+
             return cert_bytes
 
         except Exception as e:
