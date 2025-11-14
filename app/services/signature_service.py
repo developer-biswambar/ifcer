@@ -153,19 +153,13 @@ class SignatureService:
             cert_hash = hashlib.sha256(cert_der_bytes).digest()
             logger.debug(f"[STEP 1/5] Certificate hash computed: {cert_hash.hex()[:32]}...")
 
-            # Extract issuer and serial number
-            cert_issuer = cert['tbs_certificate']['issuer']
-            cert_serial = cert['tbs_certificate']['serial_number']
-
             # Build ESSCertIDv2 structure (RFC 5035)
-            # This includes the certificate hash and issuer/serial for CAdES compliance
+            # For CAdES-BES, we only need the hash algorithm and cert hash
+            # The issuerSerial is OPTIONAL and omitting it simplifies the structure
             ess_cert_id_v2 = core.Sequence([
                 algos.DigestAlgorithm({'algorithm': '2.16.840.1.101.3.4.2.1'}),  # SHA-256
-                core.OctetString(cert_hash),
-                core.Sequence([  # IssuerSerial
-                    core.Sequence([cert_issuer]),  # GeneralNames with issuer
-                    cert_serial
-                ])
+                core.OctetString(cert_hash)
+                # issuerSerial omitted (OPTIONAL per RFC 5035)
             ])
 
             # Build SigningCertificateV2 structure
