@@ -153,36 +153,36 @@ class SignatureService:
             cert_hash = hashlib.sha256(cert_der_bytes).digest()
             logger.debug(f"[STEP 1/5] Certificate hash computed: {cert_hash.hex()[:32]}...")
 
-            # Build SigningCertificateV2 manually as DER bytes (RFC 5035)
-            # SigningCertificateV2 ::= SEQUENCE {
-            #     certs SEQUENCE OF ESSCertIDv2
+            # Build SigningCertificate (v1) manually as DER bytes (RFC 2634)
+            # EU DSS validator expects v1, not v2!
+            # SigningCertificate ::= SEQUENCE {
+            #     certs SEQUENCE OF ESSCertID
             # }
-            # ESSCertIDv2 ::= SEQUENCE {
-            #     hashAlgorithm AlgorithmIdentifier DEFAULT {algorithm id-sha256},
-            #     certHash Hash (OCTET STRING)
+            # ESSCertID ::= SEQUENCE {
+            #     certHash Hash (SHA-1 OCTET STRING, 20 bytes)
             # }
 
-            # Build AlgorithmIdentifier for SHA-256: SEQUENCE { OID, NULL }
-            # AlgorithmIdentifier = SEQUENCE { algorithm OID, parameters NULL }
-            hash_alg = bytes.fromhex('300d06096086480165030402010500')  # Full AlgorithmIdentifier for SHA-256
+            # EU DSS expects SigningCertificate (v1) not v2!
+            # Use SHA-1 hash for v1 (RFC 2634)
+            cert_hash_sha1 = hashlib.sha1(cert_der_bytes).digest()  # 20 bytes
+            logger.debug(f"[STEP 1/5] Certificate SHA-1 hash: {cert_hash_sha1.hex()}")
 
-            # Build certHash: OCTET STRING containing the SHA-256 hash
-            cert_hash_octet = bytes.fromhex('0420') + cert_hash  # OCTET STRING tag (0x04) + length (0x20 = 32 bytes)
+            # Build certHash: OCTET STRING containing SHA-1 hash (20 bytes)
+            cert_hash_octet = bytes.fromhex('0414') + cert_hash_sha1  # 0x04 = OCTET STRING, 0x14 = 20 bytes
 
-            # Build ESSCertIDv2: SEQUENCE { hashAlgorithm, certHash }
-            ess_cert_id_v2_content = hash_alg + cert_hash_octet
-            ess_cert_id_v2 = bytes.fromhex('30') + bytes([len(ess_cert_id_v2_content)]) + ess_cert_id_v2_content
+            # Build ESSCertID: SEQUENCE { certHash }
+            ess_cert_id = bytes.fromhex('30') + bytes([len(cert_hash_octet)]) + cert_hash_octet
 
-            # Build SEQUENCE OF ESSCertIDv2 (containing one ESSCertIDv2)
-            certs_seq = bytes.fromhex('30') + bytes([len(ess_cert_id_v2)]) + ess_cert_id_v2
+            # Build SEQUENCE OF ESSCertID
+            certs_seq = bytes.fromhex('30') + bytes([len(ess_cert_id)]) + ess_cert_id
 
-            # Build SigningCertificateV2: SEQUENCE { certs }
-            signing_cert_v2_der = bytes.fromhex('30') + bytes([len(certs_seq)]) + certs_seq
+            # Build SigningCertificate (v1): SEQUENCE { certs }
+            signing_cert_der = bytes.fromhex('30') + bytes([len(certs_seq)]) + certs_seq
 
-            logger.debug(f"[STEP 1/5] SigningCertificateV2 DER built: {signing_cert_v2_der.hex()[:64]}...")
+            logger.debug(f"[STEP 1/5] SigningCertificate (v1) DER built: {signing_cert_der.hex()}")
 
             # Step 2: Build SignedAttributes (DTBS - Data To Be Signed)
-            logger.debug(f"[STEP 2/5] Building SignedAttributes (DTBS) structure with signing-certificate-v2")
+            logger.debug(f"[STEP 2/5] Building SignedAttributes (DTBS) structure with signing-certificate (v1)")
 
             file_hash_bytes = bytes.fromhex(signature_request.file_hash)
 
@@ -206,15 +206,15 @@ class SignatureService:
                     'values': [core.UTCTime(datetime.now(timezone.utc))]
                 }),
                 cms.CMSAttribute({
-                    'type': cms.CMSAttributeType('1.2.840.113549.1.9.16.2.47'),  # id-aa-signingCertificateV2
-                    'values': [core.Any.load(signing_cert_v2_der)]  # Load DER bytes as Any type
+                    'type': cms.CMSAttributeType('1.2.840.113549.1.9.16.2.12'),  # id-aa-signingCertificate (v1)
+                    'values': [core.Any.load(signing_cert_der)]  # Load DER bytes as Any type
                 })
             ])
 
             logger.info(
-                f"[STEP 2/5] SignedAttributes built with file hash and signing-certificate-v2 | "
+                f"[STEP 2/5] SignedAttributes built with file hash and signing-certificate (v1) | "
                 f"File hash: {signature_request.file_hash[:32]}... | "
-                f"Cert hash: {cert_hash.hex()[:32]}..."
+                f"Cert hash (SHA-1): {cert_hash_sha1.hex()}"
             )
 
             # Step 3: Compute DTBS digest (hash of SignedAttributes)
