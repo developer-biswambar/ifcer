@@ -900,10 +900,12 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
 
     return FileProcessingResult(
         file_key=file_key,
+        filename=filename,
         status=ProcessingStatus.COMPLETED,
         file_hash=hash_info.hash_value,
         signature=sig_response.signature,
         timestamp=sig_response.timestamp,
         p7m_file_key=p7m_file_key,  # Store P7M file key
         error_message=None,
+        processing_time=elapsed,
     )

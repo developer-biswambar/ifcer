@@ -102,12 +102,14 @@ class FileProcessingResult(BaseModel):
     """Result of processing a single file."""
 
     file_key: str = Field(..., description="S3 file key")
+    filename: str = Field(..., description="Original filename")
     status: ProcessingStatus = Field(..., description="Processing status")
     file_hash: Optional[str] = Field(None, description="File hash")
     signature: Optional[str] = Field(None, description="Digital signature")
     timestamp: Optional[datetime] = Field(None, description="Timestamp")
     p7m_file_key: Optional[str] = Field(None, description="S3 key for P7M file")
     error_message: Optional[str] = Field(None, description="Error message if failed")
+    processing_time: Optional[float] = Field(None, description="Processing time in seconds")
 
 
 class BatchProcessingResponse(BaseModel):

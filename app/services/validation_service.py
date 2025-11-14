@@ -363,6 +363,41 @@ class ValidationService:
             logger.error(f"[VALIDATION] Error validating certificate: {str(e)}")
             return False, {}
 
+    def validate_p7m_structure(self, p7m_content: bytes) -> Tuple[bool, str]:
+        """
+        Validate P7M structure and return validation result.
+
+        This is a lightweight validation method that checks if the P7M structure is valid
+        without performing full cryptographic verification.
+
+        Args:
+            p7m_content: P7M file bytes
+
+        Returns:
+            Tuple of (is_valid, validation_message)
+        """
+        try:
+            is_valid, p7m_data = self._verify_p7m_structure(p7m_content)
+
+            if is_valid:
+                message = (
+                    f"P7M structure valid: "
+                    f"version={p7m_data.get('version')}, "
+                    f"certificates={p7m_data.get('certificate_count')}, "
+                    f"signers={p7m_data.get('signer_count')}"
+                )
+                logger.debug(f"[VALIDATION] {message}")
+                return True, message
+            else:
+                message = "Invalid P7M structure"
+                logger.error(f"[VALIDATION] {message}")
+                return False, message
+
+        except Exception as e:
+            message = f"P7M validation failed: {str(e)}"
+            logger.error(f"[VALIDATION] {message}")
+            return False, message
+
     def quick_validate(self, original_file_content: bytes, p7m_file: bytes) -> bool:
         """
         Quick validation - just verify embedded file matches original.
