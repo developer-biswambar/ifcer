@@ -153,19 +153,33 @@ class SignatureService:
             cert_hash = hashlib.sha256(cert_der_bytes).digest()
             logger.debug(f"[STEP 1/5] Certificate hash computed: {cert_hash.hex()[:32]}...")
 
-            # Build ESSCertIDv2 structure (RFC 5035)
-            # For CAdES-BES, we only need the hash algorithm and cert hash
-            # The issuerSerial is OPTIONAL and omitting it simplifies the structure
-            ess_cert_id_v2 = core.Sequence([
-                algos.DigestAlgorithm({'algorithm': '2.16.840.1.101.3.4.2.1'}),  # SHA-256
-                core.OctetString(cert_hash)
-                # issuerSerial omitted (OPTIONAL per RFC 5035)
-            ])
+            # Build SigningCertificateV2 manually as DER bytes (RFC 5035)
+            # SigningCertificateV2 ::= SEQUENCE {
+            #     certs SEQUENCE OF ESSCertIDv2
+            # }
+            # ESSCertIDv2 ::= SEQUENCE {
+            #     hashAlgorithm AlgorithmIdentifier DEFAULT {algorithm id-sha256},
+            #     certHash Hash (OCTET STRING)
+            # }
 
-            # Build SigningCertificateV2 structure
-            signing_cert_v2 = core.Sequence([
-                core.Sequence([ess_cert_id_v2])  # Sequence of ESSCertIDv2
-            ])
+            # Build AlgorithmIdentifier for SHA-256: SEQUENCE { OID, NULL }
+            # AlgorithmIdentifier = SEQUENCE { algorithm OID, parameters NULL }
+            hash_alg = bytes.fromhex('300d06096086480165030402010500')  # Full AlgorithmIdentifier for SHA-256
+
+            # Build certHash: OCTET STRING containing the SHA-256 hash
+            cert_hash_octet = bytes.fromhex('0420') + cert_hash  # OCTET STRING tag (0x04) + length (0x20 = 32 bytes)
+
+            # Build ESSCertIDv2: SEQUENCE { hashAlgorithm, certHash }
+            ess_cert_id_v2_content = hash_alg + cert_hash_octet
+            ess_cert_id_v2 = bytes.fromhex('30') + bytes([len(ess_cert_id_v2_content)]) + ess_cert_id_v2_content
+
+            # Build SEQUENCE OF ESSCertIDv2 (containing one ESSCertIDv2)
+            certs_seq = bytes.fromhex('30') + bytes([len(ess_cert_id_v2)]) + ess_cert_id_v2
+
+            # Build SigningCertificateV2: SEQUENCE { certs }
+            signing_cert_v2_der = bytes.fromhex('30') + bytes([len(certs_seq)]) + certs_seq
+
+            logger.debug(f"[STEP 1/5] SigningCertificateV2 DER built: {signing_cert_v2_der.hex()[:64]}...")
 
             # Step 2: Build SignedAttributes (DTBS - Data To Be Signed)
             logger.debug(f"[STEP 2/5] Building SignedAttributes (DTBS) structure with signing-certificate-v2")
@@ -193,7 +207,7 @@ class SignatureService:
                 }),
                 cms.CMSAttribute({
                     'type': cms.CMSAttributeType('1.2.840.113549.1.9.16.2.47'),  # id-aa-signingCertificateV2
-                    'values': [signing_cert_v2]
+                    'values': [core.Any.load(signing_cert_v2_der)]  # Load DER bytes as Any type
                 })
             ])
 
