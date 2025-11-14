@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from app.config import settings
 from app.utils.logger import setup_logger, log_exception
+from app.middleware.correlation_id import get_correlation_id
 
 logger = setup_logger(__name__)
 
@@ -60,6 +61,7 @@ class DynamoDBService:
         status: str = "completed",
         error_message: Optional[str] = None,
         vendor_response: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None,
     ) -> bool:
         """
         Save certification metadata to DynamoDB.
@@ -76,6 +78,7 @@ class DynamoDBService:
             status: Processing status (completed/failed)
             error_message: Error message if failed
             vendor_response: Full vendor API response
+            correlation_id: Request correlation ID for tracing
 
         Returns:
             True if successful
@@ -97,6 +100,10 @@ class DynamoDBService:
                 f"Hash: {file_hash[:16]}..."
             )
 
+            # Get correlation ID from context if not explicitly provided
+            if correlation_id is None:
+                correlation_id = get_correlation_id()
+
             item = {
                 "Id": file_key,  # Primary key - using file_key as unique identifier
                 "file_key": file_key,  # Keep for reference
@@ -112,6 +119,10 @@ class DynamoDBService:
                 "signed_file_size": signed_file_size,
                 "status": status,
             }
+
+            # Add correlation_id if available
+            if correlation_id:
+                item["correlation_id"] = correlation_id
 
             if error_message:
                 item["error_message"] = error_message

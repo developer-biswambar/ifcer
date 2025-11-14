@@ -90,10 +90,19 @@ class Settings(BaseSettings):
     vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
 
     # ==================== Processing Settings ====================
-    # Loaded from: HASH_ALGORITHM, BATCH_SIZE, REQUEST_TIMEOUT
+    # Loaded from: HASH_ALGORITHM, BATCH_SIZE, REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS,
+    #              RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX, MAX_CONCURRENT_REQUESTS
     hash_algorithm: str = "sha256"  # Cryptographic hash algorithm (sha256, sha512, sha1, md5)
     batch_size: int = 100  # Number of files to process per batch
     request_timeout: int = 30  # Timeout for API requests in seconds
+
+    # Retry configuration for recoverable errors (network issues, rate limiting, server overload)
+    retry_max_attempts: int = 3  # Maximum retry attempts for recoverable errors
+    retry_backoff_base: float = 1.0  # Base backoff time in seconds (exponential: 1s, 2s, 4s, 8s, 16s)
+    retry_backoff_max: float = 32.0  # Maximum backoff time in seconds
+
+    # Parallel processing configuration
+    max_concurrent_requests: int = 10  # Maximum concurrent file processing operations
 
     class Config:
         """Pydantic settings configuration."""

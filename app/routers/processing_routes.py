@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from datetime import datetime, timezone
 from typing import List
 import os
+import asyncio
 
 from app.models.schemas import (
     DateRangeRequest,
@@ -20,6 +21,7 @@ from app.services.signature_service import SignatureService
 from app.services.dynamodb_service import DynamoDBService
 from app.services.validation_service import ValidationService
 from app.utils.logger import setup_logger, log_exception
+from app.config import settings
 from app import __version__
 
 logger = setup_logger(__name__)
@@ -193,19 +195,30 @@ async def process_files(request: DateRangeRequest):
                 duration_seconds=duration,
             )
 
-        # Step 2: Process each file
-        logger.info(f"[BATCH STEP 2/2] Processing {total_files} files...")
-        for index, file_metadata in enumerate(files, 1):
-            logger.info(
-                f"[BATCH PROGRESS] Processing file {index}/{total_files} ({(index/total_files*100):.1f}%) | "
-                f"File: {file_metadata.key}"
+        # Step 2: Process files in parallel with concurrency limit
+        logger.info(
+            f"[BATCH STEP 2/2] Processing {total_files} files in parallel | "
+            f"Max concurrent: {settings.max_concurrent_requests}"
+        )
+
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+
+        # Create async tasks for all files
+        tasks = [
+            process_single_file_with_semaphore(
+                file_metadata.key,
+                index + 1,
+                total_files,
+                semaphore
             )
-            result = await process_single_file(file_metadata.key)
-            results.append(result)
-            logger.debug(
-                f"[BATCH PROGRESS] File {index}/{total_files} completed | "
-                f"Status: {result.status.value}"
-            )
+            for index, file_metadata in enumerate(files)
+        ]
+
+        # Execute all tasks in parallel (respecting semaphore limit)
+        logger.info(f"[BATCH PARALLEL] Starting parallel execution of {total_files} files...")
+        results = await asyncio.gather(*tasks)
+        logger.info(f"[BATCH PARALLEL] All {total_files} files processed")
 
         # Calculate statistics
         successful_files = len(
@@ -248,6 +261,52 @@ async def process_files(request: DateRangeRequest):
             f"[BATCH FAILED] ✗ Batch processing failed after {processed_count} files | Duration: {elapsed:.2f}s"
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def process_single_file_with_semaphore(
+    file_key: str,
+    file_index: int,
+    total_files: int,
+    semaphore: asyncio.Semaphore
+) -> FileProcessingResult:
+    """
+    Process a single file with semaphore-based concurrency control.
+
+    This wrapper function:
+    1. Acquires semaphore before processing (blocks if limit reached)
+    2. Logs progress with percentage
+    3. Calls process_single_file to do actual work
+    4. Releases semaphore when done
+
+    Args:
+        file_key: S3 file key
+        file_index: File index in batch (1-based)
+        total_files: Total files in batch
+        semaphore: Asyncio semaphore for concurrency control
+
+    Returns:
+        FileProcessingResult with processing outcome
+
+    Raises:
+        Exception: Any processing error will propagate and fail the batch
+    """
+    # Acquire semaphore (will block if max concurrent limit reached)
+    async with semaphore:
+        logger.info(
+            f"[BATCH PROGRESS] Processing file {file_index}/{total_files} ({(file_index/total_files*100):.1f}%) | "
+            f"File: {file_key}"
+        )
+
+        # Process the file
+        result = await process_single_file(file_key)
+
+        logger.debug(
+            f"[BATCH PROGRESS] File {file_index}/{total_files} completed | "
+            f"Status: {result.status.value} | "
+            f"File: {file_key}"
+        )
+
+        return result
 
 
 async def process_single_file(file_key: str) -> FileProcessingResult:

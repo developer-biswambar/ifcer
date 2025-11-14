@@ -19,6 +19,7 @@ from app.models.schemas import SignatureRequest, SignatureResponse
 from app.services.certificate_service import CertificateService
 from app.services.p7m_service import P7MService
 from app.utils.logger import setup_logger, log_exception
+from app.utils.retry import retry_on_recoverable_errors
 
 logger = setup_logger(__name__)
 
@@ -39,6 +40,60 @@ class SignatureService:
         self.p7m_service = P7MService()
 
         logger.info(f"Signature service initialized | API: {self.api_url}")
+
+    @retry_on_recoverable_errors
+    def _call_infocert_sign_api(
+        self,
+        session: requests.Session,
+        endpoint_url: str,
+        payload: dict,
+        filename: str
+    ) -> dict:
+        """
+        Call InfoCert hashSignatures API with retry on recoverable errors.
+
+        This method is decorated with retry logic that handles:
+        - Network timeouts
+        - Connection errors
+        - Rate limiting (HTTP 429)
+        - Server overload (HTTP 502, 503, 504)
+
+        Will NOT retry on:
+        - Authentication errors (HTTP 401, 403)
+        - Client errors (HTTP 400, 404)
+        - Internal server errors (HTTP 500)
+
+        Args:
+            session: Configured requests.Session with mTLS
+            endpoint_url: Full API endpoint URL
+            payload: Request payload dictionary
+            filename: File being processed (for logging)
+
+        Returns:
+            Response data dictionary from InfoCert API
+
+        Raises:
+            RequestException: If API request fails after all retries
+            Timeout: If request times out after all retries
+            SSLError: If mTLS authentication fails
+        """
+        logger.debug(f"[API CALL] Calling InfoCert API for {filename}")
+
+        response = session.post(
+            endpoint_url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.infocert_sat}",
+                "X-signer-id": settings.infocert_credential_id,
+                "Content-Type": "application/json"
+            },
+            timeout=self.timeout,
+        )
+
+        response.raise_for_status()
+        logger.debug(f"[API CALL] Received HTTP {response.status_code} for {filename}")
+
+        return response.json()
 
     def sign_file_hash(self, signature_request: SignatureRequest, original_file_content: bytes) -> SignatureResponse:
         """
@@ -140,22 +195,17 @@ class SignatureService:
             logger.info(f"[STEP 4/5] Sending DTBS digest to InfoCert for signing...")
             logger.debug(f"[STEP 4/5] API URL: {endpoint_url}")
 
-            response = session.post(
-                endpoint_url,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.infocert_sat}",
-                    "X-signer-id": settings.infocert_credential_id,
-                    "Content-Type": "application/json"
-                },
-                timeout=self.timeout,
+            # Call InfoCert API with retry on recoverable errors
+            response_data = self._call_infocert_sign_api(
+                session=session,
+                endpoint_url=endpoint_url,
+                payload=payload,
+                filename=signature_request.filename
             )
 
-            response.raise_for_status()
-            logger.info(f"[STEP 4/5] Received response from InfoCert (HTTP {response.status_code})")
+            logger.info(f"[STEP 4/5] Received response from InfoCert")
 
             # Parse response
-            response_data = response.json()
             signature_results = response_data.get("signatureResult", [])
 
             if not signature_results:

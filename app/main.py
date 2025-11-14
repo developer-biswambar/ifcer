@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.routers import processing_routes, files_routes, certificates_routes
+from app.middleware.correlation_id import CorrelationIdMiddleware
 from app.utils.logger import setup_logger, log_exception
 from app import __version__
 
@@ -17,6 +18,9 @@ app = FastAPI(
     description="Batch service for digital signature and timestamping of files for Italian register submission",
     version=__version__,
 )
+
+# Add middleware (order matters - correlation ID should be first to capture all requests)
+app.add_middleware(CorrelationIdMiddleware)
 
 # Include routers
 app.include_router(processing_routes.router, tags=["Processing"])
@@ -40,7 +44,7 @@ async def startup_event():
     logger.info(f"Starting {settings.app_name} v{__version__}")
     logger.info(f"Environment: {settings.aws_region}")
     logger.info(f"S3 Bucket: {settings.s3_bucket_name}")
-    logger.info(f"Vendor API: {settings.vendor_api_url}")
+    logger.info(f"InfoCert API: {settings.infocert_api_url}")
 
 
 @app.on_event("shutdown")
