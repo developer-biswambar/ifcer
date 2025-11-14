@@ -360,3 +360,34 @@ class S3Service:
         except Exception as e:
             log_exception(logger, e, f"Unexpected error searching for files: {filename}")
             raise
+
+    def delete_file(self, file_key: str) -> bool:
+        """
+        Delete a file from S3 bucket.
+
+        Args:
+            file_key: S3 object key to delete
+
+        Returns:
+            True if file was deleted successfully
+
+        Raises:
+            ClientError: If S3 delete operation fails
+        """
+        try:
+            logger.info(f"[S3 DELETE] Deleting file: {file_key}")
+
+            self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=file_key
+            )
+
+            logger.info(f"[S3 DELETE] ✓ File deleted successfully: {file_key}")
+            return True
+
+        except ClientError as e:
+            log_exception(logger, e, f"[S3 DELETE] Failed to delete file: {file_key}")
+            raise
+        except Exception as e:
+            log_exception(logger, e, f"[S3 DELETE] Unexpected error deleting file: {file_key}")
+            raise

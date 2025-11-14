@@ -338,8 +338,8 @@ async def download_signed_file(
     The P7M files are stored in the "signed/" folder with .p7m extension.
 
     Args:
-        original_file_key: Original file S3 key (e.g., "uploads/document.txt")
-        signed_file_key: P7M file S3 key (e.g., "signed/document.p7m")
+        original_file_key: Original file S3 key (e.g., "uploads/document.pdf")
+        signed_file_key: P7M file S3 key (e.g., "signed/document.pdf.p7m")
 
     Returns:
         StreamingResponse: P7M file content with appropriate headers
@@ -427,3 +427,101 @@ async def download_signed_file(
     except Exception as e:
         log_exception(logger, e, f"Failed to download signed file")
         raise HTTPException(status_code=500, detail=f"Failed to download signed file: {str(e)}")
+
+
+@router.delete("/original")
+async def delete_original_file(
+    file_key: str = Query(..., description="S3 key of the original file to delete")
+):
+    """
+    Delete an original file from S3.
+
+    This endpoint deletes the original file from the S3 bucket.
+    Note: This does NOT delete the signed P7M file or the DynamoDB record.
+
+    Use cases:
+    - Clean up original files after successful signing
+    - Remove files that are no longer needed
+    - Free up S3 storage space
+
+    Args:
+        file_key: S3 object key of the original file (e.g., "uploads/abc/invoice.pdf")
+
+    Returns:
+        Success message with deleted file key
+
+    Raises:
+        HTTPException: If file deletion fails
+
+    Example:
+        DELETE /original?file_key=uploads/abc/invoice.pdf
+    """
+    try:
+        logger.info(f"[DELETE ORIGINAL] Deleting original file: {file_key}")
+
+        # Delete file from S3
+        s3_service.delete_file(file_key)
+
+        logger.info(f"[DELETE ORIGINAL] ✓ Original file deleted successfully: {file_key}")
+
+        return {
+            "message": "Original file deleted successfully",
+            "file_key": file_key,
+            "deleted_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        log_exception(logger, e, f"[DELETE ORIGINAL] Failed to delete original file: {file_key}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete original file: {str(e)}"
+        )
+
+
+@router.delete("/signed")
+async def delete_signed_file(
+    file_key: str = Query(..., description="S3 key of the signed P7M file to delete")
+):
+    """
+    Delete a signed P7M file from S3.
+
+    This endpoint deletes the signed P7M file from the S3 bucket.
+    Note: This does NOT delete the original file or the DynamoDB record.
+
+    Use cases:
+    - Remove signed files that need to be re-signed
+    - Clean up signed files after they've been downloaded/archived
+    - Free up S3 storage space
+
+    Args:
+        file_key: S3 object key of the signed file (e.g., "signed/invoice.pdf.p7m")
+
+    Returns:
+        Success message with deleted file key
+
+    Raises:
+        HTTPException: If file deletion fails
+
+    Example:
+        DELETE /signed?file_key=signed/invoice.pdf.p7m
+    """
+    try:
+        logger.info(f"[DELETE SIGNED] Deleting signed file: {file_key}")
+
+        # Delete file from S3
+        s3_service.delete_file(file_key)
+
+        logger.info(f"[DELETE SIGNED] ✓ Signed file deleted successfully: {file_key}")
+
+        return {
+            "message": "Signed file deleted successfully",
+            "file_key": file_key,
+            "deleted_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        log_exception(logger, e, f"[DELETE SIGNED] Failed to delete signed file: {file_key}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete signed file: {str(e)}"
+        )

@@ -1,0 +1,446 @@
+{
+	"info": {
+		"_postman_id": "ifcer-batch-service-001",
+		"name": "IFCER Batch Service",
+		"description": "Complete API collection for IFCER Batch Service - Digital signature and timestamping for Italian register submission",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "ifcer-batch-service"
+	},
+	"item": [
+		{
+			"name": "Root",
+			"item": [
+				{
+					"name": "Service Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								""
+							]
+						},
+						"description": "Get service information, version, and status"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Processing",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Health check endpoint - verifies S3 connectivity"
+					},
+					"response": []
+				},
+				{
+					"name": "Batch Process Files",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"start_date\": \"{{start_date}}\",\n  \"end_date\": \"{{end_date}}\",\n  \"prefix\": \"{{prefix}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/process",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"process"
+							]
+						},
+						"description": "Process files from S3 bucket within specified date range.\n\nPrefix handling:\n- If not provided: searches in 'uploads/'\n- If provided (e.g., 'abc'): searches in 'uploads/abc/'\n\nContinue-on-error: Processes ALL files even if some fail."
+					},
+					"response": []
+				},
+				{
+					"name": "Recertify Single File",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"file_key\": \"{{sample_file_key}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/recertify",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"recertify"
+							]
+						},
+						"description": "Recertify a single file by S3 key.\n\nUseful for:\n- Recertifying failed files\n- Re-signing files with updated timestamps\n- Processing individual files on demand"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Failed Files",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/failed-files?date_partition={{date_partition}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"failed-files"
+							],
+							"query": [
+								{
+									"key": "date_partition",
+									"value": "{{date_partition}}",
+									"description": "Optional: YYYY-MM format (e.g., '2025-01')"
+								}
+							]
+						},
+						"description": "Get all failed file processing records.\n\nOptionally filter by date partition (YYYY-MM format)"
+					},
+					"response": []
+				},
+				{
+					"name": "Reprocess Failed Files",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"file_keys\": [\n    \"uploads/invoice-123.pdf\",\n    \"uploads/invoice-456.pdf\"\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/reprocess-failed",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"reprocess-failed"
+							]
+						},
+						"description": "Reprocess failed files.\n\nProvide either:\n- file_keys: Array of specific file keys to reprocess\n- date_partition: Reprocess all failures from that month (YYYY-MM)\n- Neither: Reprocess ALL failed files (use with caution)"
+					},
+					"response": []
+				},
+				{
+					"name": "Reprocess Failed Files (by Date Partition)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"date_partition\": \"{{date_partition}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/reprocess-failed",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"reprocess-failed"
+							]
+						},
+						"description": "Reprocess all failed files from a specific month"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Files",
+			"item": [
+				{
+					"name": "Get File Details",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"filename\": \"{{filename}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/file-details",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"file-details"
+							]
+						},
+						"description": "Get file details and signing status by filename.\n\nReturns:\n- Original file location\n- Signed file location (if exists)\n- Signing timestamp\n- File hash and signature details"
+					},
+					"response": []
+				},
+				{
+					"name": "List Files by Date Range",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"start_date\": \"{{start_date}}\",\n  \"end_date\": \"{{end_date}}\",\n  \"prefix\": \"{{prefix}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/files-list",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"files-list"
+							]
+						},
+						"description": "List all files processed within a date range.\n\nOptionally filter by S3 prefix."
+					},
+					"response": []
+				},
+				{
+					"name": "Download Original File",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/download/original?file_key={{sample_file_key}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"download",
+								"original"
+							],
+							"query": [
+								{
+									"key": "file_key",
+									"value": "{{sample_file_key}}",
+									"description": "S3 key of the original file"
+								}
+							]
+						},
+						"description": "Download the original file from S3"
+					},
+					"response": []
+				},
+				{
+					"name": "Download Signed File (by Original Key)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/download/signed?original_file_key={{sample_file_key}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"download",
+								"signed"
+							],
+							"query": [
+								{
+									"key": "original_file_key",
+									"value": "{{sample_file_key}}",
+									"description": "Original file S3 key (looks up P7M in DynamoDB)"
+								}
+							]
+						},
+						"description": "Download the signed P7M file by providing the original file key.\n\nThe endpoint looks up the signed file key in DynamoDB."
+					},
+					"response": []
+				},
+				{
+					"name": "Download Signed File (Direct)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/download/signed?signed_file_key={{sample_signed_key}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"download",
+								"signed"
+							],
+							"query": [
+								{
+									"key": "signed_file_key",
+									"value": "{{sample_signed_key}}",
+									"description": "Direct S3 key of the P7M file"
+								}
+							]
+						},
+						"description": "Download the signed P7M file by providing the direct P7M file key."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Original File",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/original?file_key={{sample_file_key}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"original"
+							],
+							"query": [
+								{
+									"key": "file_key",
+									"value": "{{sample_file_key}}",
+									"description": "S3 key of the original file to delete"
+								}
+							]
+						},
+						"description": "Delete an original file from S3.\n\nNote: Does NOT delete the signed P7M file or DynamoDB record."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Signed File",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/signed?file_key={{sample_signed_key}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"signed"
+							],
+							"query": [
+								{
+									"key": "file_key",
+									"value": "{{sample_signed_key}}",
+									"description": "S3 key of the signed P7M file to delete"
+								}
+							]
+						},
+						"description": "Delete a signed P7M file from S3.\n\nNote: Does NOT delete the original file or DynamoDB record."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Certificates",
+			"item": [
+				{
+					"name": "Get All Certificates",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/certificates",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"certificates"
+							]
+						},
+						"description": "Get all certificates from InfoCert API.\n\nReturns structured certificate data including subject, issuer, status, and expiration."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Active Certificates",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/certificates/active",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"certificates",
+								"active"
+							]
+						},
+						"description": "Get only active certificates from InfoCert API.\n\nFilters certificates with status='active'."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		}
+	]
+}

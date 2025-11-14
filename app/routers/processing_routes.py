@@ -96,7 +96,8 @@ async def recertify_single_file(request: SingleFileRequest):
     2. Computes the file hash
     3. Sends hash to InfoCert API for signature
     4. Creates P7M file with ORIGINAL FILE EMBEDDED (REQUIRED - fails if creation fails):
-       - {basename}.p7m: PKCS#7/CAdES signature with original file content embedded
+       - {filename}.p7m: PKCS#7/CAdES signature with original file content embedded
+       - Example: abc.pdf becomes abc.pdf.p7m
     5. Uploads P7M file back to S3 in signed/ folder
     6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
 
@@ -146,8 +147,13 @@ async def process_files(request: DateRangeRequest):
     - Review all failures at once
     - Retry only failed files using /recertify endpoint
 
+    PREFIX HANDLING:
+    - If prefix not provided: searches in "uploads/" folder
+    - If prefix provided (e.g., "abc"): searches in "uploads/abc/" folder
+    - This allows organizing files by environment/client while maintaining structure
+
     This endpoint:
-    1. Fetches files from S3 based on upload date range
+    1. Fetches files from S3 based on upload date range and prefix
     2. For each file (in parallel):
        - Downloads and computes hash
        - Sends to InfoCert API for signature
@@ -167,10 +173,21 @@ async def process_files(request: DateRangeRequest):
     results: List[FileProcessingResult] = []
 
     try:
+        # Build S3 prefix with "uploads" pattern
+        # If no prefix given: use "uploads"
+        # If prefix given (e.g., "abc"): use "uploads/abc/"
+        if not request.prefix:
+            s3_prefix = "uploads"
+        else:
+            # Remove trailing slash if present
+            base_prefix = request.prefix.rstrip("/")
+            s3_prefix = f"uploads/{base_prefix}/"
+
         logger.info(
             f"[BATCH START] Starting batch processing | "
             f"Date range: {request.start_date.isoformat()} to {request.end_date.isoformat()} | "
-            f"Prefix: {request.prefix or 'None'}"
+            f"Requested prefix: {request.prefix or 'None'} | "
+            f"S3 prefix: {s3_prefix}"
         )
 
         # Step 1: List files from S3 by date range
@@ -178,7 +195,7 @@ async def process_files(request: DateRangeRequest):
         files = s3_service.list_files_by_date_range(
             start_date=request.start_date,
             end_date=request.end_date,
-            prefix=request.prefix,
+            prefix=s3_prefix,
         )
 
         total_files = len(files)
@@ -628,11 +645,10 @@ async def process_single_file(file_key: str) -> FileProcessingResult:
     logger.info(f"[VALIDATION] ✓ P7M validation passed | Certificate: {validation_result['certificate_info'].get('subject', 'N/A')}")
 
     # Step 4: Upload P7M file to S3
-    # Generate filename based on original file: abc.txt -> abc.p7m
+    # Generate filename based on original file: abc.pdf -> abc.pdf.p7m
     original_filename = os.path.basename(file_key)
-    base_name = os.path.splitext(original_filename)[0]  # Remove extension (abc.txt -> abc)
 
-    p7m_file_key = f"signed/{base_name}.p7m"
+    p7m_file_key = f"signed/{original_filename}.p7m"
 
     logger.debug(f"[FILE STEP 4/5] Uploading P7M to S3: {p7m_file_key}")
 

@@ -25,7 +25,13 @@ class DateRangeRequest(BaseModel):
         ..., description="End date for S3 file filtering (upload date)"
     )
     prefix: Optional[str] = Field(
-        None, description="Optional S3 prefix to filter files"
+        None,
+        description=(
+            "Optional S3 prefix (subfolder under uploads). "
+            "If not provided, defaults to 'uploads'. "
+            "If provided (e.g., 'abc'), becomes 'uploads/abc/'. "
+            "This allows organizing uploads in different subfolders."
+        )
     )
 
     class Config:
@@ -33,7 +39,7 @@ class DateRangeRequest(BaseModel):
             "example": {
                 "start_date": "2025-01-01T00:00:00Z",
                 "end_date": "2025-01-31T23:59:59Z",
-                "prefix": "documents/",
+                "prefix": "documents",
             }
         }
 
