@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import requests
 from requests.exceptions import RequestException, Timeout, SSLError
-from asn1crypto import cms, core
+from asn1crypto import cms, core, x509 as asn1_x509, algos
 
 from app.config import settings
 from app.models.schemas import SignatureRequest, SignatureResponse
@@ -97,21 +97,28 @@ class SignatureService:
 
     def sign_file_hash(self, signature_request: SignatureRequest, original_file_content: bytes) -> SignatureResponse:
         """
-        Sign original file hash using InfoCert hashSignatures API and create P7M with embedded content.
+        Sign original file hash using InfoCert hashSignatures API and create CAdES-compliant P7M.
 
-        Workflow:
-        1. Send original file hash to InfoCert hashSignatures API
-        2. InfoCert returns RAW signature bytes + optional timestamp
-        3. Fetch signing certificate from InfoCert
-        4. Build complete P7M file with ORIGINAL FILE EMBEDDED
+        Workflow (ETSI EN 319 122-1 compliant):
+        1. Fetch signing certificate from InfoCert
+        2. Build SignedAttributes (DTBS) with:
+           - content_type
+           - message_digest (file hash)
+           - signing_time
+           - signing-certificate-v2 (REQUIRED for CAdES compliance)
+        3. Compute DTBS digest (hash of SignedAttributes)
+        4. Send DTBS digest to InfoCert hashSignatures API
+        5. InfoCert returns RAW signature bytes + optional timestamp
+        6. Build complete P7M file with ORIGINAL FILE EMBEDDED
 
         The .p7m file contains:
         - Original file content (embedded)
-        - Signature of original file hash
+        - SignedAttributes with signing-certificate-v2
+        - Signature of DTBS (SignedAttributes)
         - Certificate
-        - Timestamp
+        - Timestamp (optional)
 
-        Result: Single P7M file (no separate manifest needed)
+        Result: CAdES-BES compliant P7M file
 
         Authentication: mTLS + Bearer SAT token + X-signer-id + PIN
 
@@ -136,12 +143,47 @@ class SignatureService:
                 f"Size: {len(original_file_content)} bytes"
             )
 
-            # Step 1: Build SignedAttributes (DTBS - Data To Be Signed)
-            logger.debug(f"[STEP 1/5] Building SignedAttributes (DTBS) structure")
+            # Step 1: Fetch signing certificate (needed for signing-certificate-v2 attribute)
+            logger.debug(f"[STEP 1/5] Fetching signing certificate from InfoCert")
+            cert_der_bytes = self.cert_service.get_signing_certificate_bytes()
+            cert = asn1_x509.Certificate.load(cert_der_bytes)
+            logger.info(f"[STEP 1/5] Certificate fetched: {len(cert_der_bytes)} bytes")
+
+            # Compute certificate hash for signing-certificate-v2 attribute (CAdES requirement)
+            cert_hash = hashlib.sha256(cert_der_bytes).digest()
+            logger.debug(f"[STEP 1/5] Certificate hash computed: {cert_hash.hex()[:32]}...")
+
+            # Extract issuer and serial number
+            cert_issuer = cert['tbs_certificate']['issuer']
+            cert_serial = cert['tbs_certificate']['serial_number']
+
+            # Build ESSCertIDv2 structure (RFC 5035)
+            # This includes the certificate hash and issuer/serial for CAdES compliance
+            ess_cert_id_v2 = core.Sequence([
+                algos.DigestAlgorithm({'algorithm': '2.16.840.1.101.3.4.2.1'}),  # SHA-256
+                core.OctetString(cert_hash),
+                core.Sequence([  # IssuerSerial
+                    core.Sequence([cert_issuer]),  # GeneralNames with issuer
+                    cert_serial
+                ])
+            ])
+
+            # Build SigningCertificateV2 structure
+            signing_cert_v2 = core.Sequence([
+                core.Sequence([ess_cert_id_v2])  # Sequence of ESSCertIDv2
+            ])
+
+            # Step 2: Build SignedAttributes (DTBS - Data To Be Signed)
+            logger.debug(f"[STEP 2/5] Building SignedAttributes (DTBS) structure with signing-certificate-v2")
 
             file_hash_bytes = bytes.fromhex(signature_request.file_hash)
 
-            # Build SignedAttributes according to ETSI EN 319 102-1
+            # Build SignedAttributes according to ETSI EN 319 122-1 (CAdES)
+            # REQUIRED attributes for CAdES-BES:
+            # - content_type
+            # - message_digest (file hash)
+            # - signing_time
+            # - signing-certificate-v2 (MANDATORY for CAdES compliance!)
             signed_attrs = cms.CMSAttributes([
                 cms.CMSAttribute({
                     'type': cms.CMSAttributeType('content_type'),
@@ -154,27 +196,35 @@ class SignatureService:
                 cms.CMSAttribute({
                     'type': cms.CMSAttributeType('signing_time'),
                     'values': [core.UTCTime(datetime.now(timezone.utc))]
+                }),
+                cms.CMSAttribute({
+                    'type': cms.CMSAttributeType('1.2.840.113549.1.9.16.2.47'),  # id-aa-signingCertificateV2
+                    'values': [signing_cert_v2]
                 })
             ])
 
-            logger.info(f"[STEP 1/5] SignedAttributes built with file hash: {signature_request.file_hash[:32]}...")
+            logger.info(
+                f"[STEP 2/5] SignedAttributes built with file hash and signing-certificate-v2 | "
+                f"File hash: {signature_request.file_hash[:32]}... | "
+                f"Cert hash: {cert_hash.hex()[:32]}..."
+            )
 
-            # Step 2: Compute DTBS digest (hash of SignedAttributes)
-            logger.debug(f"[STEP 2/5] Computing DTBS digest (hash of SignedAttributes)")
+            # Step 3: Compute DTBS digest (hash of SignedAttributes)
+            logger.debug(f"[STEP 3/5] Computing DTBS digest (hash of SignedAttributes)")
 
             # DER encode SignedAttributes for hashing
             signed_attrs_der = signed_attrs.dump()
             dtbs_digest = hashlib.sha256(signed_attrs_der).digest()
             dtbs_digest_b64 = base64.b64encode(dtbs_digest).decode('ascii')
 
-            logger.info(f"[STEP 2/5] DTBS digest computed: {dtbs_digest_b64[:32]}...")
+            logger.info(f"[STEP 3/5] DTBS digest computed: {dtbs_digest_b64[:32]}...")
 
-            # Step 3: Create session with mTLS
-            logger.debug(f"[STEP 3/5] Creating mTLS session for InfoCert API")
+            # Step 4: Create session with mTLS and send to InfoCert
+            logger.debug(f"[STEP 4/5] Creating mTLS session for InfoCert API")
             session = self.cert_service._create_session()
-            logger.info(f"[STEP 3/5] mTLS session established")
+            logger.info(f"[STEP 4/5] mTLS session established")
 
-            # Step 4: Send DTBS digest to InfoCert hashSignatures API
+            # Prepare InfoCert hashSignatures API request
             logger.debug(f"[STEP 4/5] Preparing InfoCert hashSignatures API request")
 
             payload = {
@@ -240,12 +290,7 @@ class SignatureService:
                 timestamp_bytes = base64.b64decode(timestamp_b64) if timestamp_b64 else None
                 logger.debug(f"[STEP 4/5] Timestamp included: {len(timestamp_b64)} chars")
 
-            # Step 5: Fetch signing certificate and build P7M with SignedAttributes
-            logger.debug(f"[STEP 5/5] Fetching signing certificate from InfoCert")
-            cert_der_bytes = self.cert_service.get_signing_certificate_bytes()
-            logger.info(f"[STEP 5/5] Certificate fetched: {len(cert_der_bytes)} bytes")
-
-            # Build complete P7M file with ORIGINAL FILE EMBEDDED and SignedAttributes
+            # Step 5: Build P7M file with SignedAttributes (certificate already fetched in step 1)
             logger.debug(f"[STEP 5/5] Building P7M file with SignedAttributes ({len(original_file_content)} bytes)")
             p7m_bytes = self.p7m_service.create_p7m_from_signature(
                 file_content=original_file_content,  # Embed original file
