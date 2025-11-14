@@ -217,30 +217,15 @@ async def process_files(request: DateRangeRequest):
                 duration_seconds=duration,
             )
 
-        # Step 2: Process files in parallel with concurrency limit
+        # Step 2: Process files using batch signing API
         logger.info(
-            f"[BATCH STEP 2/2] Processing {total_files} files in parallel | "
-            f"Max concurrent: {settings.max_concurrent_requests}"
+            f"[BATCH STEP 2/2] Processing {total_files} files using batch signing | "
+            f"Batch size: {settings.batch_sign_size}"
         )
 
-        # Create semaphore for concurrency control
-        semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
-
-        # Create async tasks for all files
-        tasks = [
-            process_single_file_with_semaphore(
-                file_metadata.key,
-                index + 1,
-                total_files,
-                semaphore
-            )
-            for index, file_metadata in enumerate(files)
-        ]
-
-        # Execute all tasks in parallel (respecting semaphore limit)
-        logger.info(f"[BATCH PARALLEL] Starting parallel execution of {total_files} files...")
-        results = await asyncio.gather(*tasks)
-        logger.info(f"[BATCH PARALLEL] All {total_files} files processed")
+        # Process files in chunks using batch signing
+        results = await process_files_in_batches(files)
+        logger.info(f"[BATCH COMPLETE] All {total_files} files processed")
 
         # Calculate statistics
         successful_files = len(
@@ -479,6 +464,233 @@ async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_par
         elapsed = (datetime.now(timezone.utc) - processing_start).total_seconds()
         log_exception(logger, e, f"[REPROCESS] Failed after {elapsed:.2f}s")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def process_files_in_batches(files: List) -> List[FileProcessingResult]:
+    """
+    Process files in batches using InfoCert batch signing API.
+
+    This function:
+    1. Downloads all files and computes hashes
+    2. Chunks files into batches of size settings.batch_sign_size
+    3. Sends each batch to InfoCert in a SINGLE API call
+    4. Uploads P7M files and saves to DynamoDB
+
+    Performance:
+    - 100 files with batch_size=50: 2 API calls (vs 100 individual calls)
+    - Reduces API overhead by 98%
+
+    Args:
+        files: List of S3 file metadata objects
+
+    Returns:
+        List of FileProcessingResult for all files
+    """
+    all_results = []
+    total_files = len(files)
+
+    logger.info(f"[BATCH PROCESS] Starting batch processing for {total_files} files")
+
+    # Step 1: Download all files and compute hashes
+    logger.info(f"[BATCH DOWNLOAD] Downloading and hashing {total_files} files...")
+    download_start = datetime.now(timezone.utc)
+
+    file_data_list = []  # List of (file_key, file_content, hash_info)
+
+    for file_metadata in files:
+        file_key = file_metadata.key
+        try:
+            # Download file
+            file_content = s3_service.download_file(file_key)
+
+            # Compute hash
+            hash_info = hash_service.compute_hash(file_content, file_key)
+
+            file_data_list.append((file_key, file_content, hash_info))
+
+        except Exception as e:
+            # Handle download/hash errors
+            filename = os.path.basename(file_key)
+            error_message = str(e)
+
+            logger.error(f"[BATCH DOWNLOAD ERROR] Failed to download/hash {file_key}: {error_message}")
+
+            # Save failed record
+            try:
+                dynamodb_service.save_certification(
+                    file_key=file_key,
+                    status="failed",
+                    error_message=f"Download/hash failed: {error_message}",
+                    error_type=type(e).__name__
+                )
+            except Exception as db_error:
+                log_exception(logger, db_error, f"Failed to save error record for {file_key}")
+
+            # Add to results as failed
+            all_results.append(FileProcessingResult(
+                file_key=file_key,
+                filename=filename,
+                status=ProcessingStatus.FAILED,
+                error_message=error_message,
+                processing_time=0,
+                p7m_file_key=None,
+                file_hash=None
+            ))
+
+    download_elapsed = (datetime.now(timezone.utc) - download_start).total_seconds()
+    logger.info(
+        f"[BATCH DOWNLOAD] Downloaded and hashed {len(file_data_list)}/{total_files} files | "
+        f"Duration: {download_elapsed:.2f}s"
+    )
+
+    if not file_data_list:
+        logger.warning("[BATCH PROCESS] No files to sign (all downloads failed)")
+        return all_results
+
+    # Step 2: Split into batches and process
+    batch_size = settings.batch_sign_size
+    num_batches = (len(file_data_list) + batch_size - 1) // batch_size  # Ceiling division
+
+    logger.info(
+        f"[BATCH SIGN] Splitting {len(file_data_list)} files into {num_batches} batches "
+        f"of max {batch_size} files each"
+    )
+
+    for batch_num in range(num_batches):
+        batch_start_idx = batch_num * batch_size
+        batch_end_idx = min((batch_num + 1) * batch_size, len(file_data_list))
+        batch_files = file_data_list[batch_start_idx:batch_end_idx]
+
+        batch_start_time = datetime.now(timezone.utc)
+
+        logger.info(
+            f"[BATCH {batch_num + 1}/{num_batches}] Processing batch of {len(batch_files)} files "
+            f"(files {batch_start_idx + 1}-{batch_end_idx} of {len(file_data_list)})"
+        )
+
+        # Prepare signature requests for this batch
+        signature_requests = []
+        for file_key, file_content, hash_info in batch_files:
+            filename = os.path.basename(file_key)
+            sig_request = SignatureRequest(
+                file_hash=hash_info.hash_value,
+                hash_algorithm=hash_info.hash_algorithm,
+                filename=filename,
+            )
+            signature_requests.append((sig_request, file_content))
+
+        # Call batch signing API
+        logger.info(f"[BATCH {batch_num + 1}/{num_batches}] Sending {len(signature_requests)} files to InfoCert...")
+        batch_results = signature_service.sign_file_hashes_batch(signature_requests)
+
+        logger.info(f"[BATCH {batch_num + 1}/{num_batches}] Received {len(batch_results)} results from InfoCert")
+
+        # Process results: upload P7M and save to DynamoDB
+        for idx, (sig_request, sig_response, file_content, error) in enumerate(batch_results):
+            file_key, _, hash_info = batch_files[idx]
+            filename = os.path.basename(file_key)
+            file_start = datetime.now(timezone.utc)
+
+            if error:
+                # Signature failed
+                error_message = str(error)
+                logger.error(f"[BATCH {batch_num + 1}/{num_batches}] Signature failed for {filename}: {error_message}")
+
+                # Save failed record
+                try:
+                    dynamodb_service.save_certification(
+                        file_key=file_key,
+                        status="failed",
+                        error_message=f"Signature failed: {error_message}",
+                        error_type=type(error).__name__
+                    )
+                except Exception as db_error:
+                    log_exception(logger, db_error, f"Failed to save error record for {file_key}")
+
+                all_results.append(FileProcessingResult(
+                    file_key=file_key,
+                    filename=filename,
+                    status=ProcessingStatus.FAILED,
+                    error_message=error_message,
+                    processing_time=0,
+                    p7m_file_key=None,
+                    file_hash=hash_info.hash_value
+                ))
+                continue
+
+            try:
+                # Upload P7M file
+                original_filename = os.path.basename(file_key)
+                p7m_file_key = f"signed/{original_filename}.p7m"
+
+                s3_service.upload_file(sig_response.p7m_content, p7m_file_key)
+                logger.debug(f"[BATCH {batch_num + 1}/{num_batches}] Uploaded P7M for {filename}")
+
+                # Validate P7M
+                is_valid, validation_message = validation_service.validate_p7m_structure(sig_response.p7m_content)
+
+                # Save to DynamoDB
+                dynamodb_service.save_certification(
+                    file_key=file_key,
+                    p7m_file_key=p7m_file_key,
+                    file_hash=hash_info.hash_value,
+                    hash_algorithm=hash_info.hash_algorithm,
+                    signature=sig_response.signature,
+                    timestamp=sig_response.timestamp,
+                    manifest_content=sig_response.manifest_content,
+                    validation_status="valid" if is_valid else "invalid",
+                    validation_message=validation_message,
+                    status="completed"
+                )
+
+                file_elapsed = (datetime.now(timezone.utc) - file_start).total_seconds()
+
+                all_results.append(FileProcessingResult(
+                    file_key=file_key,
+                    filename=filename,
+                    status=ProcessingStatus.COMPLETED,
+                    error_message=None,
+                    processing_time=file_elapsed,
+                    p7m_file_key=p7m_file_key,
+                    file_hash=hash_info.hash_value
+                ))
+
+                logger.debug(f"[BATCH {batch_num + 1}/{num_batches}] Completed {filename}")
+
+            except Exception as e:
+                # Upload/save failed
+                error_message = str(e)
+                logger.error(f"[BATCH {batch_num + 1}/{num_batches}] Post-signature processing failed for {filename}: {error_message}")
+
+                # Save failed record
+                try:
+                    dynamodb_service.save_certification(
+                        file_key=file_key,
+                        status="failed",
+                        error_message=f"Upload/save failed: {error_message}",
+                        error_type=type(e).__name__
+                    )
+                except Exception as db_error:
+                    log_exception(logger, db_error, f"Failed to save error record for {file_key}")
+
+                all_results.append(FileProcessingResult(
+                    file_key=file_key,
+                    filename=filename,
+                    status=ProcessingStatus.FAILED,
+                    error_message=error_message,
+                    processing_time=0,
+                    p7m_file_key=None,
+                    file_hash=hash_info.hash_value
+                ))
+
+        batch_elapsed = (datetime.now(timezone.utc) - batch_start_time).total_seconds()
+        logger.info(
+            f"[BATCH {batch_num + 1}/{num_batches}] Batch complete | "
+            f"Duration: {batch_elapsed:.2f}s | "
+            f"Avg per file: {batch_elapsed/len(batch_files):.2f}s"
+        )
+
+    return all_results
 
 
 async def process_single_file_with_semaphore(

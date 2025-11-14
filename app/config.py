@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     # Set to 0 to disable caching
     certificate_cache_ttl_seconds: int = 3600  # Cache TTL in seconds
 
+    # ==================== Batch Signing Settings ====================
+    # Loaded from: BATCH_SIGN_SIZE
+    # Maximum number of files to send to InfoCert in a single batch API call
+    # Default: 50 (conservative limit to avoid request size limits)
+    # InfoCert may have undocumented limits - adjust based on testing
+    # If batch processing has 200 files, it will be split into 4 batches of 50
+    batch_sign_size: int = 50
+
     class Config:
         """Pydantic settings configuration."""
         # Load from .env file if it exists (for local development)
