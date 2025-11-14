@@ -51,32 +51,38 @@ class DynamoDBService:
     def save_certification(
         self,
         file_key: str,
-        file_hash: str,
-        hash_algorithm: str,
-        digital_signature: str,
-        vendor_timestamp: datetime,
-        signed_file_key: str,
-        file_size: int,
-        signed_file_size: int,
+        file_hash: Optional[str] = None,
+        hash_algorithm: Optional[str] = None,
+        digital_signature: Optional[str] = None,
+        vendor_timestamp: Optional[datetime] = None,
+        signed_file_key: Optional[str] = None,
+        file_size: Optional[int] = None,
+        signed_file_size: Optional[int] = None,
         status: str = "completed",
         error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
         vendor_response: Optional[Dict[str, Any]] = None,
         correlation_id: Optional[str] = None,
     ) -> bool:
         """
         Save certification metadata to DynamoDB.
 
+        For successful processing (status="completed"), all fields should be provided.
+        For failed processing (status="failed"), only file_key, status, error_message,
+        and error_type are required.
+
         Args:
-            file_key: Original S3 file key
-            file_hash: File hash value
-            hash_algorithm: Hash algorithm used
-            digital_signature: Digital signature from vendor
-            vendor_timestamp: Timestamp from vendor
-            signed_file_key: S3 key of signed P7M file
-            file_size: Original file size
-            signed_file_size: Signed file size
-            status: Processing status (completed/failed)
+            file_key: Original S3 file key (REQUIRED)
+            file_hash: File hash value (optional for failed records)
+            hash_algorithm: Hash algorithm used (optional for failed records)
+            digital_signature: Digital signature from vendor (optional for failed records)
+            vendor_timestamp: Timestamp from vendor (optional for failed records)
+            signed_file_key: S3 key of signed P7M file (optional for failed records)
+            file_size: Original file size (optional for failed records)
+            signed_file_size: Signed file size (optional for failed records)
+            status: Processing status (completed/failed, default: completed)
             error_message: Error message if failed
+            error_type: Error type/exception class if failed
             vendor_response: Full vendor API response
             correlation_id: Request correlation ID for tracing
 
@@ -96,36 +102,49 @@ class DynamoDBService:
             logger.debug(
                 f"[DYNAMODB SAVE] Preparing certification record | "
                 f"File: {file_key} | "
-                f"Status: {status} | "
-                f"Hash: {file_hash[:16]}..."
+                f"Status: {status}"
             )
 
             # Get correlation ID from context if not explicitly provided
             if correlation_id is None:
                 correlation_id = get_correlation_id()
 
+            # Build item with required fields
             item = {
                 "Id": file_key,  # Primary key - using file_key as unique identifier
                 "file_key": file_key,  # Keep for reference
                 "processing_timestamp": processing_timestamp,
                 "filename": filename,
                 "date_partition": date_partition,
-                "file_hash": file_hash,
-                "hash_algorithm": hash_algorithm,
-                "digital_signature": digital_signature,
-                "vendor_timestamp": vendor_timestamp.isoformat(),
-                "signed_file_key": signed_file_key,
-                "file_size": file_size,
-                "signed_file_size": signed_file_size,
                 "status": status,
             }
+
+            # Add optional fields only if provided (for successful records)
+            if file_hash:
+                item["file_hash"] = file_hash
+            if hash_algorithm:
+                item["hash_algorithm"] = hash_algorithm
+            if digital_signature:
+                item["digital_signature"] = digital_signature
+            if vendor_timestamp:
+                item["vendor_timestamp"] = vendor_timestamp.isoformat()
+            if signed_file_key:
+                item["signed_file_key"] = signed_file_key
+            if file_size is not None:
+                item["file_size"] = file_size
+            if signed_file_size is not None:
+                item["signed_file_size"] = signed_file_size
 
             # Add correlation_id if available
             if correlation_id:
                 item["correlation_id"] = correlation_id
 
+            # Add error details if failed
             if error_message:
                 item["error_message"] = error_message
+                item["failure_timestamp"] = processing_timestamp
+            if error_type:
+                item["error_type"] = error_type
 
             if vendor_response:
                 item["vendor_response"] = vendor_response
@@ -141,15 +160,27 @@ class DynamoDBService:
             self.table.put_item(Item=item)
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.info(
-                f"[DYNAMODB SAVE] ✓ Certification saved | "
-                f"Table: {self.table_name} | "
-                f"File: {file_key} | "
-                f"Status: {status} | "
-                f"Original size: {file_size:,} bytes | "
-                f"P7M size: {signed_file_size:,} bytes | "
-                f"Duration: {elapsed:.2f}s{ttl_info}"
-            )
+
+            # Build log message based on status
+            if status == "failed":
+                logger.info(
+                    f"[DYNAMODB SAVE] ✓ Failed record saved | "
+                    f"Table: {self.table_name} | "
+                    f"File: {file_key} | "
+                    f"Status: {status} | "
+                    f"Error: {error_message} | "
+                    f"Duration: {elapsed:.2f}s{ttl_info}"
+                )
+            else:
+                logger.info(
+                    f"[DYNAMODB SAVE] ✓ Certification saved | "
+                    f"Table: {self.table_name} | "
+                    f"File: {file_key} | "
+                    f"Status: {status} | "
+                    f"Original size: {file_size:,} bytes | "
+                    f"P7M size: {signed_file_size:,} bytes | "
+                    f"Duration: {elapsed:.2f}s{ttl_info}"
+                )
             return True
 
         except ClientError as e:
@@ -266,6 +297,73 @@ class DynamoDBService:
             raise
         except Exception as e:
             log_exception(logger, e, "Unexpected error querying date range")
+            raise
+
+    def get_failed_files(self, date_partition: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all failed file processing records.
+
+        Args:
+            date_partition: Optional date partition to filter (e.g., "2025-01")
+                          If None, scans entire table for failed records
+
+        Returns:
+            List of failed file records with error details
+        """
+        try:
+            logger.info(f"[DYNAMODB QUERY] Querying failed files | Partition: {date_partition or 'ALL'}")
+
+            if date_partition:
+                # Query specific month partition
+                response = self.table.query(
+                    IndexName="date-index",
+                    KeyConditionExpression="date_partition = :partition",
+                    FilterExpression="#status = :failed",
+                    ExpressionAttributeNames={
+                        "#status": "status"
+                    },
+                    ExpressionAttributeValues={
+                        ":partition": date_partition,
+                        ":failed": "failed"
+                    },
+                    ScanIndexForward=False  # Most recent first
+                )
+                items = response.get("Items", [])
+            else:
+                # Scan entire table for failed records (use with caution for large tables)
+                response = self.table.scan(
+                    FilterExpression="#status = :failed",
+                    ExpressionAttributeNames={
+                        "#status": "status"
+                    },
+                    ExpressionAttributeValues={
+                        ":failed": "failed"
+                    }
+                )
+                items = response.get("Items", [])
+
+                # Handle pagination for scan
+                while "LastEvaluatedKey" in response:
+                    response = self.table.scan(
+                        FilterExpression="#status = :failed",
+                        ExpressionAttributeNames={
+                            "#status": "status"
+                        },
+                        ExpressionAttributeValues={
+                            ":failed": "failed"
+                        },
+                        ExclusiveStartKey=response["LastEvaluatedKey"]
+                    )
+                    items.extend(response.get("Items", []))
+
+            logger.info(f"[DYNAMODB QUERY] Found {len(items)} failed files")
+            return [self._convert_decimals(item) for item in items]
+
+        except ClientError as e:
+            log_exception(logger, e, "Failed to query failed files")
+            raise
+        except Exception as e:
+            log_exception(logger, e, "Unexpected error querying failed files")
             raise
 
     def batch_get_certifications(self, file_keys: List[str]) -> Dict[str, Dict[str, Any]]:

@@ -20,8 +20,10 @@ from app.services.hash_service import HashService
 from app.services.signature_service import SignatureService
 from app.services.dynamodb_service import DynamoDBService
 from app.services.validation_service import ValidationService
+from app.services.notification_service import NotificationService
 from app.utils.logger import setup_logger, log_exception
 from app.config import settings
+from app.middleware.correlation_id import get_correlation_id
 from app import __version__
 
 logger = setup_logger(__name__)
@@ -32,6 +34,7 @@ hash_service = HashService()
 signature_service = SignatureService()
 dynamodb_service = DynamoDBService()
 validation_service = ValidationService()
+notification_service = NotificationService()
 
 router = APIRouter()
 
@@ -137,26 +140,28 @@ async def process_files(request: DateRangeRequest):
     """
     Process files from S3 bucket within the specified date range.
 
-    FAIL-FAST BEHAVIOR: If ANY single file fails processing (including P7M creation),
-    the ENTIRE batch will fail immediately. This ensures data consistency and prevents
-    partial processing.
+    CONTINUE-ON-ERROR BEHAVIOR: Processes ALL files even if some fail. Failed files
+    are saved to DynamoDB with status="failed" and error details. This allows you to:
+    - Process entire monthly batch in one run
+    - Review all failures at once
+    - Retry only failed files using /recertify endpoint
 
     This endpoint:
     1. Fetches files from S3 based on upload date range
-    2. Computes hash for each file
-    3. Sends hash to InfoCert API for digital signature and timestamp
-    4. Creates P7M files with ORIGINAL FILES EMBEDDED (REQUIRED - fails if P7M creation fails)
-    5. Uploads P7M files back to S3 in signed/ folder
-    6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
+    2. For each file (in parallel):
+       - Downloads and computes hash
+       - Sends to InfoCert API for signature
+       - Creates P7M with embedded original file
+       - Uploads to S3 and saves to DynamoDB
+       - If fails: Saves error to DynamoDB, continues with next file
+    3. Returns results for ALL files (successful and failed)
+    4. Sends SNS notification with batch statistics (if configured)
 
     Args:
         request: DateRangeRequest with start_date, end_date, and optional prefix
 
     Returns:
-        BatchProcessingResponse with processing results (only if ALL files succeed)
-
-    Raises:
-        HTTPException: If any file fails processing (fail-fast behavior)
+        BatchProcessingResponse with complete results (both successful and failed files)
     """
     processing_start = datetime.now(timezone.utc)
     results: List[FileProcessingResult] = []
@@ -241,6 +246,24 @@ async def process_files(request: DateRangeRequest):
             f"Avg per file: {avg_time_per_file:.2f}s"
         )
 
+        # Send SNS notification with batch completion statistics
+        try:
+            notification_service.send_batch_completion_notification(
+                total_files=total_files,
+                successful_files=successful_files,
+                failed_files=failed_files,
+                results=results,
+                duration_seconds=duration,
+                date_range={
+                    "start": request.start_date.isoformat(),
+                    "end": request.end_date.isoformat()
+                },
+                correlation_id=get_correlation_id()
+            )
+        except Exception as sns_error:
+            # Don't fail batch if SNS notification fails
+            log_exception(logger, sns_error, "[SNS] Failed to send completion notification (non-critical)")
+
         return BatchProcessingResponse(
             total_files=total_files,
             processed_files=len(results),
@@ -263,6 +286,184 @@ async def process_files(request: DateRangeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/failed-files")
+async def get_failed_files(date_partition: Optional[str] = None):
+    """
+    Get list of all failed file processing records.
+
+    This endpoint allows you to review all files that failed processing,
+    including error messages and failure timestamps. Use this to:
+    - Review all failures after monthly batch processing
+    - Investigate error patterns
+    - Get file_keys for reprocessing
+
+    Args:
+        date_partition: Optional date partition filter (e.g., "2025-01")
+                       If not provided, returns all failed files
+
+    Returns:
+        JSON response with list of failed files and error details
+
+    Example Response:
+        {
+            "total": 3,
+            "failed_files": [
+                {
+                    "file_key": "uploads/2025-01/invoice-123.pdf",
+                    "filename": "invoice-123.pdf",
+                    "error_message": "Connection timeout after 30s",
+                    "error_type": "RequestException",
+                    "failure_timestamp": "2025-01-31T23:45:12Z",
+                    "correlation_id": "550e8400-..."
+                }
+            ]
+        }
+    """
+    try:
+        logger.info(f"[FAILED FILES] Querying failed files | Partition: {date_partition or 'ALL'}")
+
+        # Query DynamoDB for failed files
+        failed_records = dynamodb_service.get_failed_files(date_partition=date_partition)
+
+        logger.info(f"[FAILED FILES] Found {len(failed_records)} failed files")
+
+        return {
+            "total": len(failed_records),
+            "date_partition": date_partition,
+            "failed_files": failed_records
+        }
+
+    except Exception as e:
+        log_exception(logger, e, "[FAILED FILES] Failed to query failed files")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reprocess-failed", response_model=BatchProcessingResponse)
+async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_partition: Optional[str] = None):
+    """
+    Reprocess failed files.
+
+    This endpoint allows you to retry processing of files that previously failed.
+    You can either:
+    - Provide specific file_keys to reprocess
+    - Provide date_partition to reprocess all failures from that month
+    - Provide neither to reprocess ALL failed files (use with caution)
+
+    Args:
+        file_keys: Optional list of specific file_keys to reprocess
+        date_partition: Optional date partition (e.g., "2025-01") to reprocess all failures from that month
+
+    Returns:
+        BatchProcessingResponse with reprocessing results
+
+    Example Request (specific files):
+        POST /reprocess-failed
+        {
+            "file_keys": ["uploads/invoice-123.pdf", "uploads/invoice-456.pdf"]
+        }
+
+    Example Request (all failures from January 2025):
+        POST /reprocess-failed
+        {
+            "date_partition": "2025-01"
+        }
+    """
+    processing_start = datetime.now(timezone.utc)
+    results: List[FileProcessingResult] = []
+
+    try:
+        # Get list of failed files to reprocess
+        if file_keys:
+            # User provided specific file keys
+            logger.info(f"[REPROCESS] Reprocessing {len(file_keys)} specific files")
+            files_to_process = file_keys
+        else:
+            # Query failed files from DynamoDB
+            logger.info(f"[REPROCESS] Querying failed files | Partition: {date_partition or 'ALL'}")
+            failed_records = dynamodb_service.get_failed_files(date_partition=date_partition)
+            files_to_process = [record["file_key"] for record in failed_records]
+            logger.info(f"[REPROCESS] Found {len(files_to_process)} failed files to reprocess")
+
+        if not files_to_process:
+            logger.info("[REPROCESS] No failed files to reprocess")
+            processing_end = datetime.now(timezone.utc)
+            return BatchProcessingResponse(
+                total_files=0,
+                processed_files=0,
+                successful_files=0,
+                failed_files=0,
+                results=[],
+                processing_start=processing_start,
+                processing_end=processing_end,
+                duration_seconds=0.0
+            )
+
+        total_files = len(files_to_process)
+        logger.info(f"[REPROCESS] Starting reprocessing of {total_files} files...")
+
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+
+        # Create async tasks for all files
+        tasks = [
+            process_single_file_with_semaphore(
+                file_key,
+                index + 1,
+                total_files,
+                semaphore
+            )
+            for index, file_key in enumerate(files_to_process)
+        ]
+
+        # Execute all tasks in parallel
+        results = await asyncio.gather(*tasks)
+
+        # Calculate statistics
+        successful_files = len([r for r in results if r.status == ProcessingStatus.COMPLETED])
+        failed_files = len([r for r in results if r.status == ProcessingStatus.FAILED])
+
+        processing_end = datetime.now(timezone.utc)
+        duration = (processing_end - processing_start).total_seconds()
+
+        logger.info(
+            f"[REPROCESS COMPLETE] ✓ Reprocessing finished | "
+            f"Total: {total_files} | "
+            f"Successful: {successful_files} | "
+            f"Failed: {failed_files} | "
+            f"Duration: {duration:.2f}s"
+        )
+
+        # Send SNS notification
+        try:
+            notification_service.send_batch_completion_notification(
+                total_files=total_files,
+                successful_files=successful_files,
+                failed_files=failed_files,
+                results=results,
+                duration_seconds=duration,
+                date_range={"type": "reprocess", "partition": date_partition} if date_partition else {"type": "reprocess"},
+                correlation_id=get_correlation_id()
+            )
+        except Exception as sns_error:
+            log_exception(logger, sns_error, "[SNS] Failed to send reprocess notification (non-critical)")
+
+        return BatchProcessingResponse(
+            total_files=total_files,
+            processed_files=len(results),
+            successful_files=successful_files,
+            failed_files=failed_files,
+            results=results,
+            processing_start=processing_start,
+            processing_end=processing_end,
+            duration_seconds=duration,
+        )
+
+    except Exception as e:
+        elapsed = (datetime.now(timezone.utc) - processing_start).total_seconds()
+        log_exception(logger, e, f"[REPROCESS] Failed after {elapsed:.2f}s")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def process_single_file_with_semaphore(
     file_key: str,
     file_index: int,
@@ -276,7 +477,8 @@ async def process_single_file_with_semaphore(
     1. Acquires semaphore before processing (blocks if limit reached)
     2. Logs progress with percentage
     3. Calls process_single_file to do actual work
-    4. Releases semaphore when done
+    4. Catches errors and saves failed records to DynamoDB (continue-on-error)
+    5. Releases semaphore when done
 
     Args:
         file_key: S3 file key
@@ -285,28 +487,70 @@ async def process_single_file_with_semaphore(
         semaphore: Asyncio semaphore for concurrency control
 
     Returns:
-        FileProcessingResult with processing outcome
+        FileProcessingResult with processing outcome (success or failure)
 
-    Raises:
-        Exception: Any processing error will propagate and fail the batch
+    Note:
+        This function does NOT raise exceptions. Failures are captured as
+        FileProcessingResult with status="failed" and stored in DynamoDB.
     """
     # Acquire semaphore (will block if max concurrent limit reached)
     async with semaphore:
+        start_time = datetime.now(timezone.utc)
         logger.info(
             f"[BATCH PROGRESS] Processing file {file_index}/{total_files} ({(file_index/total_files*100):.1f}%) | "
             f"File: {file_key}"
         )
 
-        # Process the file
-        result = await process_single_file(file_key)
+        try:
+            # Process the file (may raise exception)
+            result = await process_single_file(file_key)
 
-        logger.debug(
-            f"[BATCH PROGRESS] File {file_index}/{total_files} completed | "
-            f"Status: {result.status.value} | "
-            f"File: {file_key}"
-        )
+            logger.debug(
+                f"[BATCH PROGRESS] File {file_index}/{total_files} completed | "
+                f"Status: {result.status.value} | "
+                f"File: {file_key}"
+            )
 
-        return result
+            return result
+
+        except Exception as e:
+            # Continue-on-error: Save failure to DynamoDB and continue batch
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            error_message = str(e)
+            error_type = type(e).__name__
+
+            logger.error(
+                f"[BATCH PROGRESS] File {file_index}/{total_files} FAILED | "
+                f"File: {file_key} | "
+                f"Error: {error_type}: {error_message} | "
+                f"Duration: {elapsed:.2f}s"
+            )
+
+            # Save failed record to DynamoDB
+            try:
+                dynamodb_service.save_certification(
+                    file_key=file_key,
+                    status="failed",
+                    error_message=error_message,
+                    error_type=error_type
+                )
+                logger.debug(f"[BATCH PROGRESS] Failed record saved to DynamoDB for {file_key}")
+            except Exception as db_error:
+                log_exception(logger, db_error, f"Failed to save error record to DynamoDB for {file_key}")
+
+            # Extract filename from file_key
+            filename = os.path.basename(file_key)
+
+            # Return failed result (don't raise exception - continue batch)
+            return FileProcessingResult(
+                file_key=file_key,
+                filename=filename,
+                status=ProcessingStatus.FAILED,
+                error_message=error_message,
+                processing_time=elapsed,
+                p7m_file_key=None,
+                file_hash=None
+            )
 
 
 async def process_single_file(file_key: str) -> FileProcessingResult:

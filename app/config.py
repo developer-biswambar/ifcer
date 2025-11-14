@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # Parallel processing configuration
     max_concurrent_requests: int = 10  # Maximum concurrent file processing operations
 
+    # ==================== Notification Settings ====================
+    # Loaded from: NOTIFICATION_SNS_TOPIC_ARN
+    # SNS topic for batch completion notifications (optional)
+    # If not set, notifications are disabled
+    notification_sns_topic_arn: Optional[str] = None  # AWS SNS topic ARN for notifications
+
     class Config:
         """Pydantic settings configuration."""
         # Load from .env file if it exists (for local development)
