@@ -1,6 +1,6 @@
-"""File query and download endpoints for certification status."""
+"""File query, upload, download and management endpoints."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import os
@@ -25,6 +25,276 @@ s3_service = S3Service()
 dynamodb_service = DynamoDBService()
 
 router = APIRouter()
+
+
+@router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(..., description="File to upload"),
+    prefix: Optional[str] = Form(None, description="Optional subfolder under uploads/ (e.g., 'invoices', 'contracts')")
+):
+    """
+    Upload a single file to S3 for certification.
+
+    This endpoint uploads a file to the S3 bucket in the "uploads/" folder.
+    After upload, you can process the file using the /process endpoint.
+
+    **File Organization:**
+    - Without prefix: uploads to `uploads/{filename}`
+    - With prefix: uploads to `uploads/{prefix}/{filename}`
+    - This allows organizing files by type, client, or date
+
+    **Workflow:**
+    1. Upload file(s) using this endpoint
+    2. Call /process endpoint to certify and sign uploaded files
+    3. Download signed P7M files using /download/signed endpoint
+
+    Args:
+        file: File to upload (multipart/form-data)
+        prefix: Optional subfolder (e.g., "2025-01" or "client-abc")
+
+    Returns:
+        Upload confirmation with S3 file key and metadata
+
+    Example:
+        ```bash
+        # Upload without prefix
+        curl -X POST "http://localhost:8000/upload" \\
+             -F "file=@invoice.pdf"
+
+        # Upload with prefix
+        curl -X POST "http://localhost:8000/upload" \\
+             -F "file=@invoice.pdf" \\
+             -F "prefix=invoices/2025-01"
+        ```
+    """
+    try:
+        # Validate filename
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+
+        # Build S3 key
+        if prefix:
+            # Remove leading/trailing slashes from prefix
+            clean_prefix = prefix.strip("/")
+            s3_key = f"uploads/{clean_prefix}/{file.filename}"
+        else:
+            s3_key = f"uploads/{file.filename}"
+
+        logger.info(f"[UPLOAD] Starting file upload | Filename: {file.filename} | S3 key: {s3_key}")
+
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="File is empty")
+
+        logger.debug(f"[UPLOAD] File read successfully | Size: {file_size:,} bytes")
+
+        # Determine content type
+        content_type = file.content_type or "application/octet-stream"
+
+        # Upload to S3
+        upload_start = datetime.now(timezone.utc)
+        s3_service.upload_file(
+            file_content=file_content,
+            destination_key=s3_key,
+            content_type=content_type
+        )
+        upload_elapsed = (datetime.now(timezone.utc) - upload_start).total_seconds()
+
+        logger.info(
+            f"[UPLOAD] ✓ File uploaded successfully | "
+            f"File: {file.filename} | "
+            f"S3 key: {s3_key} | "
+            f"Size: {file_size:,} bytes ({file_size / (1024*1024):.2f} MB) | "
+            f"Duration: {upload_elapsed:.2f}s"
+        )
+
+        return {
+            "message": "File uploaded successfully",
+            "file_key": s3_key,
+            "filename": file.filename,
+            "size_bytes": file_size,
+            "size_mb": round(file_size / (1024 * 1024), 2),
+            "content_type": content_type,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "next_steps": {
+                "description": "Use the /process endpoint to certify and sign this file",
+                "process_endpoint": "/process",
+                "example_request": {
+                    "start_date": datetime.now(timezone.utc).isoformat(),
+                    "end_date": datetime.now(timezone.utc).isoformat(),
+                    "prefix": prefix
+                }
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_exception(logger, e, f"Failed to upload file: {file.filename if file else 'unknown'}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
+@router.post("/upload-multiple")
+async def upload_multiple_files(
+    files: List[UploadFile] = File(..., description="Multiple files to upload"),
+    prefix: Optional[str] = Form(None, description="Optional subfolder under uploads/")
+):
+    """
+    Upload multiple files to S3 for certification in batch.
+
+    This endpoint uploads multiple files to the S3 bucket in the "uploads/" folder.
+    All files are uploaded to the same prefix (subfolder).
+
+    **Benefits:**
+    - Upload many files at once
+    - All files go to the same location for easy batch processing
+    - Reduces number of API calls compared to single uploads
+
+    **Limits:**
+    - Maximum file size: depends on your FastAPI configuration (default: unlimited)
+    - Maximum number of files: depends on your client configuration
+    - Total request size: depends on your server configuration
+
+    Args:
+        files: List of files to upload (multipart/form-data)
+        prefix: Optional subfolder for all files (e.g., "2025-01" or "client-abc")
+
+    Returns:
+        Upload summary with details for each file
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/upload-multiple" \\
+             -F "files=@invoice1.pdf" \\
+             -F "files=@invoice2.pdf" \\
+             -F "files=@contract.docx" \\
+             -F "prefix=invoices/2025-01"
+        ```
+    """
+    try:
+        batch_start = datetime.now(timezone.utc)
+
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided")
+
+        logger.info(f"[UPLOAD BATCH] Starting batch upload | File count: {len(files)} | Prefix: {prefix or 'None'}")
+
+        upload_results = []
+        total_size = 0
+        successful_uploads = 0
+        failed_uploads = 0
+
+        for file in files:
+            try:
+                # Validate filename
+                if not file.filename:
+                    logger.warning("[UPLOAD BATCH] Skipping file with no filename")
+                    upload_results.append({
+                        "filename": "unknown",
+                        "status": "failed",
+                        "error": "Filename is required"
+                    })
+                    failed_uploads += 1
+                    continue
+
+                # Build S3 key
+                if prefix:
+                    clean_prefix = prefix.strip("/")
+                    s3_key = f"uploads/{clean_prefix}/{file.filename}"
+                else:
+                    s3_key = f"uploads/{file.filename}"
+
+                # Read file content
+                file_content = await file.read()
+                file_size = len(file_content)
+
+                if file_size == 0:
+                    logger.warning(f"[UPLOAD BATCH] Skipping empty file: {file.filename}")
+                    upload_results.append({
+                        "filename": file.filename,
+                        "status": "failed",
+                        "error": "File is empty"
+                    })
+                    failed_uploads += 1
+                    continue
+
+                # Determine content type
+                content_type = file.content_type or "application/octet-stream"
+
+                # Upload to S3
+                s3_service.upload_file(
+                    file_content=file_content,
+                    destination_key=s3_key,
+                    content_type=content_type
+                )
+
+                total_size += file_size
+                successful_uploads += 1
+
+                upload_results.append({
+                    "filename": file.filename,
+                    "file_key": s3_key,
+                    "size_bytes": file_size,
+                    "size_mb": round(file_size / (1024 * 1024), 2),
+                    "content_type": content_type,
+                    "status": "success"
+                })
+
+                logger.debug(f"[UPLOAD BATCH] ✓ Uploaded: {file.filename} ({file_size:,} bytes)")
+
+            except Exception as e:
+                failed_uploads += 1
+                error_msg = str(e)
+                logger.error(f"[UPLOAD BATCH] ✗ Failed to upload {file.filename}: {error_msg}")
+
+                upload_results.append({
+                    "filename": file.filename,
+                    "status": "failed",
+                    "error": error_msg
+                })
+
+        batch_elapsed = (datetime.now(timezone.utc) - batch_start).total_seconds()
+
+        logger.info(
+            f"[UPLOAD BATCH] ✓ Batch upload complete | "
+            f"Total: {len(files)} | "
+            f"Successful: {successful_uploads} | "
+            f"Failed: {failed_uploads} | "
+            f"Total size: {total_size:,} bytes ({total_size / (1024*1024):.2f} MB) | "
+            f"Duration: {batch_elapsed:.2f}s"
+        )
+
+        return {
+            "message": "Batch upload complete",
+            "summary": {
+                "total_files": len(files),
+                "successful": successful_uploads,
+                "failed": failed_uploads,
+                "total_size_bytes": total_size,
+                "total_size_mb": round(total_size / (1024 * 1024), 2),
+                "duration_seconds": round(batch_elapsed, 2)
+            },
+            "files": upload_results,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "next_steps": {
+                "description": "Use the /process endpoint to certify and sign these files",
+                "process_endpoint": "/process",
+                "example_request": {
+                    "start_date": datetime.now(timezone.utc).isoformat(),
+                    "end_date": datetime.now(timezone.utc).isoformat(),
+                    "prefix": prefix
+                }
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_exception(logger, e, "Failed to process batch upload")
+        raise HTTPException(status_code=500, detail=f"Failed to process batch upload: {str(e)}")
 
 
 @router.post("/file-details", response_model=FileDetailsResponse)
