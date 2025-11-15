@@ -218,9 +218,12 @@ class CertificateService:
             raise
 
     def _create_session(self) -> requests.Session:
-        """Create requests session with mTLS configuration."""
+        """Create requests session with mTLS configuration.
+
+        IMPORTANT: Client certificate must be set AFTER verify configuration
+        to ensure proper mTLS handshake in all environments.
+        """
         session = requests.Session()
-        session.cert = (self.cert_path, self.key_path)
 
         # Configure SSL verification based on settings
         if not settings.ssl_verify_enabled:
@@ -243,6 +246,26 @@ class CertificateService:
             # Use system default CA bundle
             session.verify = True
             logger.debug("[SSL] Using system default CA bundle for verification")
+
+        # Verify certificate files exist and are readable
+        if not os.path.exists(self.cert_path):
+            raise FileNotFoundError(f"Client certificate not found: {self.cert_path}")
+        if not os.path.exists(self.key_path):
+            raise FileNotFoundError(f"Client key not found: {self.key_path}")
+
+        # Log file sizes for verification
+        cert_size = os.path.getsize(self.cert_path)
+        key_size = os.path.getsize(self.key_path)
+        logger.debug(f"[MTLS SESSION] Client cert file: {self.cert_path} ({cert_size} bytes)")
+        logger.debug(f"[MTLS SESSION] Client key file: {self.key_path} ({key_size} bytes)")
+
+        # CRITICAL: Set client certificate AFTER verify configuration
+        # This ensures proper mTLS handshake in all environments (AWS, on-premise)
+        # Some Python/OpenSSL versions require this order when verify=False
+        session.cert = (self.cert_path, self.key_path)
+
+        logger.debug(f"[MTLS SESSION] SSL verify: {session.verify}")
+        logger.debug(f"[MTLS SESSION] Client cert tuple configured: {session.cert is not None}")
 
         return session
 

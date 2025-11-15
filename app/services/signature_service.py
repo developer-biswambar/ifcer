@@ -79,22 +79,47 @@ class SignatureService:
             SSLError: If mTLS authentication fails
         """
         logger.debug(f"[API CALL] Calling InfoCert API for {filename}")
+        logger.debug(f"[API CALL] Endpoint: {endpoint_url}")
+        logger.debug(f"[API CALL] SSL verify: {session.verify}")
+        logger.debug(f"[API CALL] Client cert: {session.cert is not None}")
 
-        response = session.post(
-            endpoint_url,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {settings.infocert_sat}",
-                "X-signer-id": settings.infocert_credential_id,
-                "Content-Type": "application/json"
-            },
-            timeout=self.timeout,
-        )
+        try:
+            response = session.post(
+                endpoint_url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.infocert_sat}",
+                    "X-signer-id": settings.infocert_credential_id,
+                    "Content-Type": "application/json"
+                },
+                timeout=self.timeout,
+            )
 
-        response.raise_for_status()
-        logger.debug(f"[API CALL] Received HTTP {response.status_code} for {filename}")
+            logger.debug(f"[API CALL] Received HTTP {response.status_code} for {filename}")
 
-        return response.json()
+            # Check for authentication errors
+            if response.status_code == 401:
+                logger.error(
+                    f"[API CALL] UNAUTHORIZED (401) - InfoCert rejected authentication for {filename}\n"
+                    f"  Response: {response.text}\n"
+                    f"  SSL verify enabled: {settings.ssl_verify_enabled}\n"
+                    f"  Session verify: {session.verify}\n"
+                    f"  Client cert configured: {session.cert is not None}\n"
+                    f"  X-signer-id: {settings.infocert_credential_id}\n"
+                    f"  SAT token length: {len(settings.infocert_sat) if settings.infocert_sat else 0}"
+                )
+
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(
+                f"[API CALL] Request failed for {filename}: {str(e)}\n"
+                f"  SSL verify enabled: {settings.ssl_verify_enabled}\n"
+                f"  Session verify: {session.verify}\n"
+                f"  Client cert: {session.cert}"
+            )
+            raise
 
     def sign_file_hash(self, signature_request: SignatureRequest, original_file_content: bytes) -> SignatureResponse:
         """
