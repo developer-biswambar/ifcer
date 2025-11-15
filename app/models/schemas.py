@@ -124,14 +124,18 @@ class FileProcessingResult(BaseModel):
 class BatchProcessingResponse(BaseModel):
     """Response for batch processing request."""
 
-    total_files: int = Field(..., description="Total number of files found")
-    processed_files: int = Field(..., description="Number of files processed")
-    successful_files: int = Field(..., description="Number of successful files")
-    failed_files: int = Field(..., description="Number of failed files")
-    results: List[FileProcessingResult] = Field(..., description="Processing results")
+    total_files: int = Field(..., description="Total number of files found in S3")
+    already_processed_count: int = Field(
+        0, description="Number of files skipped (already successfully processed)"
+    )
+    processed_files: int = Field(..., description="Number of files processed in this run")
+    successful_files: int = Field(..., description="Number of files successfully processed in this run")
+    failed_files: int = Field(..., description="Number of files that failed in this run")
+    results: List[FileProcessingResult] = Field(..., description="Processing results for files processed in this run")
     processing_start: datetime = Field(..., description="Processing start time")
     processing_end: datetime = Field(..., description="Processing end time")
     duration_seconds: float = Field(..., description="Total processing duration")
+    message: str = Field(..., description="Human-readable summary of what happened")
 
 
 class HealthCheckResponse(BaseModel):

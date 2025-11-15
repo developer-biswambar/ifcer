@@ -219,6 +219,7 @@ async def process_files(request: DateRangeRequest):
 
             return BatchProcessingResponse(
                 total_files=0,
+                already_processed_count=0,
                 processed_files=0,
                 successful_files=0,
                 failed_files=0,
@@ -226,6 +227,7 @@ async def process_files(request: DateRangeRequest):
                 processing_start=processing_start,
                 processing_end=processing_end,
                 duration_seconds=duration,
+                message="No files found in the specified date range and prefix."
             )
 
         # Step 2: Filter out already-processed files (unless reprocess=True)
@@ -283,6 +285,7 @@ async def process_files(request: DateRangeRequest):
 
             return BatchProcessingResponse(
                 total_files=total_files_found,
+                already_processed_count=total_files_found,
                 processed_files=0,
                 successful_files=0,
                 failed_files=0,
@@ -290,6 +293,7 @@ async def process_files(request: DateRangeRequest):
                 processing_start=processing_start,
                 processing_end=processing_end,
                 duration_seconds=duration,
+                message=f"All {total_files_found} files were already successfully processed. No new files to process."
             )
 
         # Step 3: Process files using batch signing API
@@ -310,18 +314,34 @@ async def process_files(request: DateRangeRequest):
             [r for r in results if r.status == ProcessingStatus.FAILED]
         )
 
+        # Calculate already processed count
+        already_processed_count = total_files_found - total_files if not request.reprocess else 0
+
         processing_end = datetime.now(timezone.utc)
         duration = (processing_end - processing_start).total_seconds()
         avg_time_per_file = duration / total_files if total_files > 0 else 0
 
         logger.info(
             f"[BATCH COMPLETE] ✓ Batch processing finished | "
-            f"Total: {total_files} | "
+            f"Total found: {total_files_found} | "
+            f"Already processed: {already_processed_count} | "
+            f"Newly processed: {total_files} | "
             f"Successful: {successful_files} | "
             f"Failed: {failed_files} | "
             f"Duration: {duration:.2f}s | "
             f"Avg per file: {avg_time_per_file:.2f}s"
         )
+
+        # Build user-friendly message
+        message_parts = []
+        if already_processed_count > 0:
+            message_parts.append(f"{already_processed_count} files were already processed and skipped")
+        if successful_files > 0:
+            message_parts.append(f"{successful_files} files successfully processed")
+        if failed_files > 0:
+            message_parts.append(f"{failed_files} files failed")
+
+        message = ". ".join(message_parts) + "."
 
         # Send SNS notification with batch completion statistics
         try:
@@ -342,7 +362,8 @@ async def process_files(request: DateRangeRequest):
             log_exception(logger, sns_error, "[SNS] Failed to send completion notification (non-critical)")
 
         return BatchProcessingResponse(
-            total_files=total_files,
+            total_files=total_files_found,
+            already_processed_count=already_processed_count,
             processed_files=len(results),
             successful_files=successful_files,
             failed_files=failed_files,
@@ -350,6 +371,7 @@ async def process_files(request: DateRangeRequest):
             processing_start=processing_start,
             processing_end=processing_end,
             duration_seconds=duration,
+            message=message,
         )
 
     except Exception as e:
