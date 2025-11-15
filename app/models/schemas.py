@@ -33,6 +33,14 @@ class DateRangeRequest(BaseModel):
             "This allows organizing uploads in different subfolders."
         )
     )
+    reprocess: bool = Field(
+        False,
+        description=(
+            "Whether to reprocess files that have already been successfully signed. "
+            "Default: False (skip already-processed files). "
+            "Set to True to force reprocessing of all files in the date range."
+        )
+    )
 
     class Config:
         json_schema_extra = {
@@ -40,6 +48,7 @@ class DateRangeRequest(BaseModel):
                 "start_date": "2025-01-01T00:00:00Z",
                 "end_date": "2025-01-31T23:59:59Z",
                 "prefix": "documents",
+                "reprocess": False,
             }
         }
 

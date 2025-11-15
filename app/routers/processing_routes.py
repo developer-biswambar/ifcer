@@ -141,6 +141,11 @@ async def process_files(request: DateRangeRequest):
     """
     Process files from S3 bucket within the specified date range.
 
+    SMART PROCESSING (NEW): By default, skips files that have already been successfully
+    processed. This prevents unnecessary reprocessing and API costs.
+    - Default behavior (reprocess=False): Only process new/failed files
+    - Set reprocess=True: Force reprocessing of all files (including already-signed)
+
     CONTINUE-ON-ERROR BEHAVIOR: Processes ALL files even if some fail. Failed files
     are saved to DynamoDB with status="failed" and error details. This allows you to:
     - Process entire monthly batch in one run
@@ -154,17 +159,22 @@ async def process_files(request: DateRangeRequest):
 
     This endpoint:
     1. Fetches files from S3 based on upload date range and prefix
-    2. For each file (in parallel):
+    2. Checks DynamoDB to identify already-processed files (unless reprocess=True)
+    3. For each unprocessed file (in parallel):
        - Downloads and computes hash
        - Sends to InfoCert API for signature
        - Creates P7M with embedded original file
        - Uploads to S3 and saves to DynamoDB
        - If fails: Saves error to DynamoDB, continues with next file
-    3. Returns results for ALL files (successful and failed)
-    4. Sends SNS notification with batch statistics (if configured)
+    4. Returns results for ALL processed files (successful and failed)
+    5. Sends SNS notification with batch statistics (if configured)
 
     Args:
-        request: DateRangeRequest with start_date, end_date, and optional prefix
+        request: DateRangeRequest with:
+            - start_date: Start of date range
+            - end_date: End of date range
+            - prefix: Optional S3 prefix/subfolder
+            - reprocess: Whether to reprocess already-signed files (default: False)
 
     Returns:
         BatchProcessingResponse with complete results (both successful and failed files)
@@ -187,24 +197,25 @@ async def process_files(request: DateRangeRequest):
             f"[BATCH START] Starting batch processing | "
             f"Date range: {request.start_date.isoformat()} to {request.end_date.isoformat()} | "
             f"Requested prefix: {request.prefix or 'None'} | "
-            f"S3 prefix: {s3_prefix}"
+            f"S3 prefix: {s3_prefix} | "
+            f"Reprocess: {request.reprocess}"
         )
 
         # Step 1: List files from S3 by date range
-        logger.debug("[BATCH STEP 1/2] Listing files from S3...")
+        logger.debug("[BATCH STEP 1/3] Listing files from S3...")
         files = s3_service.list_files_by_date_range(
             start_date=request.start_date,
             end_date=request.end_date,
             prefix=s3_prefix,
         )
 
-        total_files = len(files)
-        logger.info(f"[BATCH STEP 1/2] Found {total_files} files to process")
+        total_files_found = len(files)
+        logger.info(f"[BATCH STEP 1/3] Found {total_files_found} files in S3")
 
-        if total_files == 0:
+        if total_files_found == 0:
             processing_end = datetime.now(timezone.utc)
             duration = (processing_end - processing_start).total_seconds()
-            logger.info(f"[BATCH COMPLETE] No files to process | Duration: {duration:.2f}s")
+            logger.info(f"[BATCH COMPLETE] No files found in S3 | Duration: {duration:.2f}s")
 
             return BatchProcessingResponse(
                 total_files=0,
@@ -217,9 +228,73 @@ async def process_files(request: DateRangeRequest):
                 duration_seconds=duration,
             )
 
-        # Step 2: Process files using batch signing API
+        # Step 2: Filter out already-processed files (unless reprocess=True)
+        if not request.reprocess:
+            logger.debug("[BATCH STEP 2/3] Checking which files have already been processed...")
+
+            # Get file keys
+            file_keys = [f.key for f in files]
+
+            # Batch query DynamoDB to check which files are already processed
+            certifications = dynamodb_service.batch_get_certifications(file_keys)
+
+            # Filter out successfully completed files
+            files_to_process = []
+            already_processed = []
+
+            for file_meta in files:
+                cert_data = certifications.get(file_meta.key)
+
+                # Skip if file has been successfully processed
+                if cert_data and cert_data.get("status") == "completed":
+                    already_processed.append(file_meta.key)
+                else:
+                    # Process if: no record OR failed OR pending
+                    files_to_process.append(file_meta)
+
+            files = files_to_process
+            skipped_count = len(already_processed)
+
+            logger.info(
+                f"[BATCH STEP 2/3] Filtered files | "
+                f"Total found: {total_files_found} | "
+                f"Already processed (skipped): {skipped_count} | "
+                f"To process: {len(files)}"
+            )
+
+            if skipped_count > 0:
+                logger.debug(f"[BATCH STEP 2/3] Skipped files: {', '.join(already_processed[:5])}" +
+                           (f" and {skipped_count - 5} more..." if skipped_count > 5 else ""))
+        else:
+            logger.info(
+                f"[BATCH STEP 2/3] Reprocess flag enabled | "
+                f"Processing all {total_files_found} files (including already-processed)"
+            )
+
+        total_files = len(files)
+
+        if total_files == 0:
+            processing_end = datetime.now(timezone.utc)
+            duration = (processing_end - processing_start).total_seconds()
+            logger.info(
+                f"[BATCH COMPLETE] No files to process (all {total_files_found} files already processed) | "
+                f"Duration: {duration:.2f}s"
+            )
+
+            return BatchProcessingResponse(
+                total_files=total_files_found,
+                processed_files=0,
+                successful_files=0,
+                failed_files=0,
+                results=[],
+                processing_start=processing_start,
+                processing_end=processing_end,
+                duration_seconds=duration,
+            )
+
+        # Step 3: Process files using batch signing API
         logger.info(
-            f"[BATCH STEP 2/2] Processing {total_files} files using batch signing | "
+            f"[BATCH STEP 3/3] Processing {total_files} files using batch signing | "
             f"Batch size: {settings.batch_sign_size}"
         )
 
