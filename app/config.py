@@ -87,29 +87,13 @@ class Settings(BaseSettings):
     # OPTION 2: PEM certificates (if P12 is not provided)
     vendor_mtls_cert_s3_key: Optional[str] = "certs/client_cert.pem"
     vendor_mtls_key_s3_key: Optional[str] = "certs/client_key.pem"
-
-    # CA certificate override (optional)
-    # If set, this CA will be used instead of the CA from P12 file
-    # Use this for corporate proxy CA certificates
-    # For local development (no proxy): Leave unset to use P12's CA
-    # For AWS with proxy: Set to proxy's CA (e.g., certs/corporate_proxy_ca.pem)
-    vendor_mtls_ca_s3_key: Optional[str] = None
+    vendor_mtls_ca_s3_key: Optional[str] = None  # Optional CA bundle for PEM mode
 
     # SSL/TLS verification control
     # Set to False to disable SSL verification for staging environments with self-signed certificates
     # WARNING: Only disable for non-production environments (staging, dev)
     # For production, always keep this True and use proper CA certificates
     ssl_verify_enabled: bool = True  # Set to False for staging if needed
-
-    # ==================== Proxy Settings ====================
-    # Loaded from: HTTPS_PROXY, HTTP_PROXY, NO_PROXY
-    # For corporate environments with proxy servers
-    # Format: http://proxy.company.com:8080 or https://proxy.company.com:8443
-    # If set, all requests to InfoCert API will go through this proxy
-    # Note: Python requests library also reads system HTTPS_PROXY/HTTP_PROXY env vars
-    https_proxy: Optional[str] = None  # HTTPS proxy URL (e.g., http://proxy.company.com:8080)
-    http_proxy: Optional[str] = None  # HTTP proxy URL
-    no_proxy: Optional[str] = None  # Comma-separated list of hosts to bypass proxy
 
     # ==================== Processing Settings ====================
     # Loaded from: HASH_ALGORITHM, BATCH_SIZE, REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS,

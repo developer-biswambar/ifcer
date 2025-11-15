@@ -173,46 +173,14 @@ class CertificateService:
             self.cert_path = self._write_temp_file(cert_pem, suffix=".pem", prefix="client_cert_")
             self.key_path = self._write_temp_file(key_pem, suffix=".pem", prefix="client_key_")
 
-            # Handle CA certificates with override support
-            # If VENDOR_MTLS_CA_S3_KEY is set, use that CA instead of P12's CA
-            # This allows using corporate proxy CA for AWS while using P12's CA locally
-            if settings.vendor_mtls_ca_s3_key:
-                # Load custom CA from S3 (e.g., corporate proxy CA)
-                logger.info(f"[MTLS P12] Custom CA specified, loading from S3: {settings.vendor_mtls_ca_s3_key}")
-                try:
-                    ca_response = s3_client.get_object(
-                        Bucket=settings.s3_bucket_name,
-                        Key=settings.vendor_mtls_ca_s3_key
-                    )
-                    custom_ca_content = ca_response["Body"].read()
-                    self.ca_path = self._write_temp_file(custom_ca_content, suffix=".pem", prefix="custom_ca_")
-                    logger.info(f"[MTLS P12] ✓ Using custom CA from S3 ({len(custom_ca_content)} bytes)")
-                    logger.info(f"[MTLS P12] This CA will be used for SSL verification (e.g., corporate proxy)")
-                except s3_client.exceptions.NoSuchKey:
-                    logger.warning(
-                        f"[MTLS P12] Custom CA not found in S3: {settings.vendor_mtls_ca_s3_key}. "
-                        f"Falling back to P12's CA certificates."
-                    )
-                    # Fall back to P12's CA
-                    if ca_certs:
-                        ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
-                        self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
-                        logger.info("[MTLS P12] ✓ Using CA certificates from P12 file")
-                    else:
-                        self.ca_path = None
-                        logger.warning("[MTLS P12] No CA certificates available")
-                except Exception as e:
-                    logger.error(f"[MTLS P12] Failed to load custom CA from S3: {e}")
-                    raise
+            # Handle CA certificates from P12 file
+            if ca_certs:
+                ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
+                self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
+                logger.info("[MTLS P12] ✓ Using CA certificates from P12 file")
             else:
-                # Use CA from P12 file (default for local development)
-                if ca_certs:
-                    ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
-                    self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
-                    logger.info("[MTLS P12] ✓ Using CA certificates from P12 file (no custom CA specified)")
-                else:
-                    self.ca_path = None
-                    logger.warning("[MTLS P12] No CA certificates found in P12 file")
+                self.ca_path = None
+                logger.warning("[MTLS P12] No CA certificates found in P12 file")
 
         except Exception as e:
             log_exception(logger, e, "Failed to load P12 certificate")
@@ -279,21 +247,6 @@ class CertificateService:
         """
         session = requests.Session()
 
-        # Configure proxy if specified
-        if settings.https_proxy or settings.http_proxy:
-            proxies = {}
-            if settings.https_proxy:
-                proxies['https'] = settings.https_proxy
-                logger.info(f"[PROXY] Using HTTPS proxy: {settings.https_proxy}")
-            if settings.http_proxy:
-                proxies['http'] = settings.http_proxy
-                logger.info(f"[PROXY] Using HTTP proxy: {settings.http_proxy}")
-            session.proxies.update(proxies)
-
-            if settings.no_proxy:
-                logger.info(f"[PROXY] Bypass proxy for: {settings.no_proxy}")
-                # requests library reads NO_PROXY from environment automatically
-
         # Configure SSL verification based on settings
         if not settings.ssl_verify_enabled:
             # Disable SSL verification for staging environments with self-signed certs
@@ -308,10 +261,7 @@ class CertificateService:
                 "NEVER disable SSL verification in production!"
             )
         elif self.ca_path:
-            # Use custom CA bundle if provided (from P12 or separate file)
-            # This CA bundle should contain:
-            # - InfoCert's CA certificate (if direct connection)
-            # - Proxy's CA certificate (if using corporate proxy with SSL inspection)
+            # Use custom CA bundle if provided (from P12 or PEM configuration)
             session.verify = self.ca_path
             logger.info(f"[SSL] Using custom CA bundle: {self.ca_path}")
         else:
