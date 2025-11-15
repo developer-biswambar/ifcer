@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     vendor_mtls_key_s3_key: Optional[str] = "certs/client_key.pem"
     vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
 
+    # SSL/TLS verification control
+    # Set to False to disable SSL verification for staging environments with self-signed certificates
+    # WARNING: Only disable for non-production environments (staging, dev)
+    # For production, always keep this True and use proper CA certificates
+    ssl_verify_enabled: bool = True  # Set to False for staging if needed
+
     # ==================== Processing Settings ====================
     # Loaded from: HASH_ALGORITHM, BATCH_SIZE, REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS,
     #              RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX, MAX_CONCURRENT_REQUESTS

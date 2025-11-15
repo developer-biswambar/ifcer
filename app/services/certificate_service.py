@@ -10,6 +10,7 @@ This service handles certificate-related operations including:
 import base64
 import tempfile
 import os
+import urllib3
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
@@ -173,10 +174,27 @@ class CertificateService:
         session = requests.Session()
         session.cert = (self.cert_path, self.key_path)
 
-        if self.ca_path:
+        # Configure SSL verification based on settings
+        if not settings.ssl_verify_enabled:
+            # Disable SSL verification for staging environments with self-signed certs
+            session.verify = False
+
+            # Suppress urllib3 InsecureRequestWarning to avoid log spam
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+            logger.warning(
+                "[SSL WARNING] SSL certificate verification is DISABLED. "
+                "This should ONLY be used in staging/dev environments with self-signed certificates. "
+                "NEVER disable SSL verification in production!"
+            )
+        elif self.ca_path:
+            # Use custom CA bundle if provided
             session.verify = self.ca_path
+            logger.debug(f"[SSL] Using custom CA bundle: {self.ca_path}")
         else:
+            # Use system default CA bundle
             session.verify = True
+            logger.debug("[SSL] Using system default CA bundle for verification")
 
         return session
 
