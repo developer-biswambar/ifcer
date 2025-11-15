@@ -629,17 +629,19 @@ async def process_files_in_batches(files: List) -> List[FileProcessingResult]:
                 # Validate P7M
                 is_valid, validation_message = validation_service.validate_p7m_structure(sig_response.p7m_content)
 
+                # Calculate P7M file size
+                p7m_file_size = len(sig_response.p7m_content)
+
                 # Save to DynamoDB
                 dynamodb_service.save_certification(
                     file_key=file_key,
-                    p7m_file_key=p7m_file_key,
+                    signed_file_key=p7m_file_key,  # Fixed: was p7m_file_key
                     file_hash=hash_info.hash_value,
                     hash_algorithm=hash_info.hash_algorithm,
-                    signature=sig_response.signature,
-                    timestamp=sig_response.timestamp,
-                    manifest_content=sig_response.manifest_content,
-                    validation_status="valid" if is_valid else "invalid",
-                    validation_message=validation_message,
+                    digital_signature=sig_response.signature,  # Fixed: was signature
+                    vendor_timestamp=sig_response.timestamp,  # Fixed: was timestamp
+                    file_size=len(file_content),
+                    signed_file_size=p7m_file_size,
                     status="completed"
                 )
 
