@@ -173,12 +173,46 @@ class CertificateService:
             self.cert_path = self._write_temp_file(cert_pem, suffix=".pem", prefix="client_cert_")
             self.key_path = self._write_temp_file(key_pem, suffix=".pem", prefix="client_key_")
 
-            # Handle CA certificates
-            if ca_certs:
-                ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
-                self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
+            # Handle CA certificates with override support
+            # If VENDOR_MTLS_CA_S3_KEY is set, use that CA instead of P12's CA
+            # This allows using corporate proxy CA for AWS while using P12's CA locally
+            if settings.vendor_mtls_ca_s3_key:
+                # Load custom CA from S3 (e.g., corporate proxy CA)
+                logger.info(f"[MTLS P12] Custom CA specified, loading from S3: {settings.vendor_mtls_ca_s3_key}")
+                try:
+                    ca_response = s3_client.get_object(
+                        Bucket=settings.s3_bucket_name,
+                        Key=settings.vendor_mtls_ca_s3_key
+                    )
+                    custom_ca_content = ca_response["Body"].read()
+                    self.ca_path = self._write_temp_file(custom_ca_content, suffix=".pem", prefix="custom_ca_")
+                    logger.info(f"[MTLS P12] ✓ Using custom CA from S3 ({len(custom_ca_content)} bytes)")
+                    logger.info(f"[MTLS P12] This CA will be used for SSL verification (e.g., corporate proxy)")
+                except s3_client.exceptions.NoSuchKey:
+                    logger.warning(
+                        f"[MTLS P12] Custom CA not found in S3: {settings.vendor_mtls_ca_s3_key}. "
+                        f"Falling back to P12's CA certificates."
+                    )
+                    # Fall back to P12's CA
+                    if ca_certs:
+                        ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
+                        self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
+                        logger.info("[MTLS P12] ✓ Using CA certificates from P12 file")
+                    else:
+                        self.ca_path = None
+                        logger.warning("[MTLS P12] No CA certificates available")
+                except Exception as e:
+                    logger.error(f"[MTLS P12] Failed to load custom CA from S3: {e}")
+                    raise
             else:
-                self.ca_path = None
+                # Use CA from P12 file (default for local development)
+                if ca_certs:
+                    ca_bundle = b''.join(ca_cert.public_bytes(serialization.Encoding.PEM) for ca_cert in ca_certs)
+                    self.ca_path = self._write_temp_file(ca_bundle, suffix=".pem", prefix="ca_bundle_")
+                    logger.info("[MTLS P12] ✓ Using CA certificates from P12 file (no custom CA specified)")
+                else:
+                    self.ca_path = None
+                    logger.warning("[MTLS P12] No CA certificates found in P12 file")
 
         except Exception as e:
             log_exception(logger, e, "Failed to load P12 certificate")
@@ -187,6 +221,8 @@ class CertificateService:
     def _load_pem_certificates(self, s3_client):
         """Load PEM certificates from S3."""
         try:
+            logger.info("[MTLS PEM] Loading PEM certificates from S3...")
+
             # Download client certificate
             cert_response = s3_client.get_object(
                 Bucket=settings.s3_bucket_name,
@@ -194,6 +230,7 @@ class CertificateService:
             )
             cert_content = cert_response["Body"].read()
             self.cert_path = self._write_temp_file(cert_content, suffix=".pem", prefix="client_cert_")
+            logger.info(f"[MTLS PEM] ✓ Client certificate loaded ({len(cert_content)} bytes)")
 
             # Download client key
             key_response = s3_client.get_object(
@@ -202,17 +239,21 @@ class CertificateService:
             )
             key_content = key_response["Body"].read()
             self.key_path = self._write_temp_file(key_content, suffix=".pem", prefix="client_key_")
+            logger.info(f"[MTLS PEM] ✓ Client key loaded ({len(key_content)} bytes)")
 
             # Download CA bundle (optional)
             if settings.vendor_mtls_ca_s3_key:
+                logger.info(f"[MTLS PEM] Loading CA bundle from S3: {settings.vendor_mtls_ca_s3_key}")
                 ca_response = s3_client.get_object(
                     Bucket=settings.s3_bucket_name,
                     Key=settings.vendor_mtls_ca_s3_key
                 )
                 ca_content = ca_response["Body"].read()
                 self.ca_path = self._write_temp_file(ca_content, suffix=".pem", prefix="ca_bundle_")
+                logger.info(f"[MTLS PEM] ✓ CA bundle loaded ({len(ca_content)} bytes)")
             else:
                 self.ca_path = None
+                logger.info("[MTLS PEM] No custom CA specified, will use system default CA bundle")
 
         except Exception as e:
             log_exception(logger, e, "Failed to load PEM certificates")

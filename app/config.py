@@ -87,7 +87,13 @@ class Settings(BaseSettings):
     # OPTION 2: PEM certificates (if P12 is not provided)
     vendor_mtls_cert_s3_key: Optional[str] = "certs/client_cert.pem"
     vendor_mtls_key_s3_key: Optional[str] = "certs/client_key.pem"
-    vendor_mtls_ca_s3_key: Optional[str] = "certs/ca_bundle.pem"
+
+    # CA certificate override (optional)
+    # If set, this CA will be used instead of the CA from P12 file
+    # Use this for corporate proxy CA certificates
+    # For local development (no proxy): Leave unset to use P12's CA
+    # For AWS with proxy: Set to proxy's CA (e.g., certs/corporate_proxy_ca.pem)
+    vendor_mtls_ca_s3_key: Optional[str] = None
 
     # SSL/TLS verification control
     # Set to False to disable SSL verification for staging environments with self-signed certificates
