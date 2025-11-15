@@ -148,6 +148,19 @@ class CertificateService:
             if not private_key or not certificate:
                 raise ValueError("P12 file does not contain valid private key or certificate")
 
+            # Log certificate details
+            logger.info(f"[MTLS P12] ✓ Client certificate extracted: {certificate.subject.rfc4514_string()}")
+            logger.debug(f"[MTLS P12]   Issuer: {certificate.issuer.rfc4514_string()}")
+
+            # Log CA certificates if present
+            if ca_certs:
+                logger.info(f"[MTLS P12] ✓ Found {len(ca_certs)} CA certificate(s) in P12 file:")
+                for i, ca_cert in enumerate(ca_certs, 1):
+                    logger.info(f"[MTLS P12]   CA {i}: {ca_cert.subject.rfc4514_string()}")
+                    logger.debug(f"[MTLS P12]        Issuer: {ca_cert.issuer.rfc4514_string()}")
+            else:
+                logger.warning("[MTLS P12] No CA certificates found in P12 file")
+
             # Convert to PEM format
             key_pem = private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -225,6 +238,21 @@ class CertificateService:
         """
         session = requests.Session()
 
+        # Configure proxy if specified
+        if settings.https_proxy or settings.http_proxy:
+            proxies = {}
+            if settings.https_proxy:
+                proxies['https'] = settings.https_proxy
+                logger.info(f"[PROXY] Using HTTPS proxy: {settings.https_proxy}")
+            if settings.http_proxy:
+                proxies['http'] = settings.http_proxy
+                logger.info(f"[PROXY] Using HTTP proxy: {settings.http_proxy}")
+            session.proxies.update(proxies)
+
+            if settings.no_proxy:
+                logger.info(f"[PROXY] Bypass proxy for: {settings.no_proxy}")
+                # requests library reads NO_PROXY from environment automatically
+
         # Configure SSL verification based on settings
         if not settings.ssl_verify_enabled:
             # Disable SSL verification for staging environments with self-signed certs
@@ -239,9 +267,12 @@ class CertificateService:
                 "NEVER disable SSL verification in production!"
             )
         elif self.ca_path:
-            # Use custom CA bundle if provided
+            # Use custom CA bundle if provided (from P12 or separate file)
+            # This CA bundle should contain:
+            # - InfoCert's CA certificate (if direct connection)
+            # - Proxy's CA certificate (if using corporate proxy with SSL inspection)
             session.verify = self.ca_path
-            logger.debug(f"[SSL] Using custom CA bundle: {self.ca_path}")
+            logger.info(f"[SSL] Using custom CA bundle: {self.ca_path}")
         else:
             # Use system default CA bundle
             session.verify = True

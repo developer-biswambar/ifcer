@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     # For production, always keep this True and use proper CA certificates
     ssl_verify_enabled: bool = True  # Set to False for staging if needed
 
+    # ==================== Proxy Settings ====================
+    # Loaded from: HTTPS_PROXY, HTTP_PROXY, NO_PROXY
+    # For corporate environments with proxy servers
+    # Format: http://proxy.company.com:8080 or https://proxy.company.com:8443
+    # If set, all requests to InfoCert API will go through this proxy
+    # Note: Python requests library also reads system HTTPS_PROXY/HTTP_PROXY env vars
+    https_proxy: Optional[str] = None  # HTTPS proxy URL (e.g., http://proxy.company.com:8080)
+    http_proxy: Optional[str] = None  # HTTP proxy URL
+    no_proxy: Optional[str] = None  # Comma-separated list of hosts to bypass proxy
+
     # ==================== Processing Settings ====================
     # Loaded from: HASH_ALGORITHM, BATCH_SIZE, REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS,
     #              RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX, MAX_CONCURRENT_REQUESTS
