@@ -82,8 +82,6 @@ class CertificateService:
                 logger.info(f"[MTLS SETUP] Using PEM certificates for mTLS authentication")
                 logger.info(f"[MTLS SETUP] Cert S3 Key: {settings.vendor_mtls_cert_s3_key}")
                 logger.info(f"[MTLS SETUP] Key S3 Key: {settings.vendor_mtls_key_s3_key}")
-                if settings.vendor_mtls_ca_s3_key:
-                    logger.info(f"[MTLS SETUP] CA Bundle S3 Key: {settings.vendor_mtls_ca_s3_key}")
                 self._load_pem_certificates(s3_client)
             else:
                 error_msg = (
@@ -209,19 +207,9 @@ class CertificateService:
             self.key_path = self._write_temp_file(key_content, suffix=".pem", prefix="client_key_")
             logger.info(f"[MTLS PEM] ✓ Client key loaded ({len(key_content)} bytes)")
 
-            # Download CA bundle (optional)
-            if settings.vendor_mtls_ca_s3_key:
-                logger.info(f"[MTLS PEM] Loading CA bundle from S3: {settings.vendor_mtls_ca_s3_key}")
-                ca_response = s3_client.get_object(
-                    Bucket=settings.s3_bucket_name,
-                    Key=settings.vendor_mtls_ca_s3_key
-                )
-                ca_content = ca_response["Body"].read()
-                self.ca_path = self._write_temp_file(ca_content, suffix=".pem", prefix="ca_bundle_")
-                logger.info(f"[MTLS PEM] ✓ CA bundle loaded ({len(ca_content)} bytes)")
-            else:
-                self.ca_path = None
-                logger.info("[MTLS PEM] No custom CA specified, will use system default CA bundle")
+            # PEM mode: No CA bundle support - will use system default CA bundle
+            self.ca_path = None
+            logger.info("[MTLS PEM] Using system default CA bundle for SSL verification")
 
         except Exception as e:
             log_exception(logger, e, "Failed to load PEM certificates")

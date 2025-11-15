@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     - VENDOR_MTLS_P12_PASSWORD: Password for P12 file (default: None)
     - VENDOR_MTLS_CERT_S3_KEY: S3 key for client certificate PEM (default: "certs/client_cert.pem")
     - VENDOR_MTLS_KEY_S3_KEY: S3 key for client key PEM (default: "certs/client_key.pem")
-    - VENDOR_MTLS_CA_S3_KEY: S3 key for CA bundle (default: "certs/ca_bundle.pem")
     - HASH_ALGORITHM: Hash algorithm (default: "sha256")
     - BATCH_SIZE: Batch processing size (default: 100)
     - REQUEST_TIMEOUT: API request timeout in seconds (default: 30)
@@ -87,7 +86,6 @@ class Settings(BaseSettings):
     # OPTION 2: PEM certificates (if P12 is not provided)
     vendor_mtls_cert_s3_key: Optional[str] = "certs/client_cert.pem"
     vendor_mtls_key_s3_key: Optional[str] = "certs/client_key.pem"
-    vendor_mtls_ca_s3_key: Optional[str] = None  # Optional CA bundle for PEM mode
 
     # SSL/TLS verification control
     # Set to False to disable SSL verification for staging environments with self-signed certificates
