@@ -52,44 +52,92 @@ class CertificateService:
     def _setup_mtls_certificates(self):
         """Download mTLS certificates from S3 and store as temporary files."""
         try:
+            logger.info(f"[MTLS SETUP] Starting mTLS certificate setup from S3")
+            logger.info(f"[MTLS SETUP] S3 Bucket: {settings.s3_bucket_name}")
+            logger.info(f"[MTLS SETUP] AWS Region: {settings.aws_region}")
+
             # Prepare boto3 client configuration
             client_config = {"region_name": settings.aws_region}
 
             if settings.aws_endpoint_url:
                 client_config["endpoint_url"] = settings.aws_endpoint_url
+                logger.info(f"[MTLS SETUP] Using custom endpoint: {settings.aws_endpoint_url}")
 
             if settings.aws_access_key_id and settings.aws_secret_access_key:
                 client_config["aws_access_key_id"] = settings.aws_access_key_id
                 client_config["aws_secret_access_key"] = settings.aws_secret_access_key
+                logger.info("[MTLS SETUP] Using explicit AWS credentials from config")
+            else:
+                logger.info("[MTLS SETUP] Using IAM role credentials (ECS/EC2)")
 
             s3_client = boto3.client("s3", **client_config)
 
             # Use P12 certificate if configured
             if settings.vendor_mtls_p12_s3_key and settings.vendor_mtls_p12_password:
-                logger.info("Using P12 certificate for mTLS authentication")
+                logger.info(f"[MTLS SETUP] Using P12 certificate for mTLS authentication")
+                logger.info(f"[MTLS SETUP] P12 S3 Key: {settings.vendor_mtls_p12_s3_key}")
                 self._load_p12_certificate(s3_client)
             # Fallback to PEM certificates
             elif settings.vendor_mtls_cert_s3_key and settings.vendor_mtls_key_s3_key:
-                logger.info("Using PEM certificates for mTLS authentication")
+                logger.info(f"[MTLS SETUP] Using PEM certificates for mTLS authentication")
+                logger.info(f"[MTLS SETUP] Cert S3 Key: {settings.vendor_mtls_cert_s3_key}")
+                logger.info(f"[MTLS SETUP] Key S3 Key: {settings.vendor_mtls_key_s3_key}")
+                if settings.vendor_mtls_ca_s3_key:
+                    logger.info(f"[MTLS SETUP] CA Bundle S3 Key: {settings.vendor_mtls_ca_s3_key}")
                 self._load_pem_certificates(s3_client)
             else:
-                raise ValueError("No valid mTLS certificate configuration found")
+                error_msg = (
+                    "No valid mTLS certificate configuration found. "
+                    "Please set either P12 (VENDOR_MTLS_P12_S3_KEY + VENDOR_MTLS_P12_PASSWORD) "
+                    "or PEM (VENDOR_MTLS_CERT_S3_KEY + VENDOR_MTLS_KEY_S3_KEY) environment variables."
+                )
+                logger.error(f"[MTLS SETUP] {error_msg}")
+                raise ValueError(error_msg)
 
-            logger.info("Certificate service initialized successfully")
+            logger.info("[MTLS SETUP] ✓ Certificate service initialized successfully")
+            logger.info(f"[MTLS SETUP] ✓ Client cert path: {self.cert_path}")
+            logger.info(f"[MTLS SETUP] ✓ Client key path: {self.key_path}")
+            if hasattr(self, 'ca_path') and self.ca_path:
+                logger.info(f"[MTLS SETUP] ✓ CA bundle path: {self.ca_path}")
 
         except Exception as e:
-            log_exception(logger, e, "Failed to setup mTLS certificates")
+            log_exception(logger, e, "[MTLS SETUP] Failed to setup mTLS certificates")
             raise
 
     def _load_p12_certificate(self, s3_client):
         """Load P12 certificate from S3 and extract cert/key."""
         try:
+            logger.info(f"[MTLS P12] Downloading P12 certificate from S3...")
+            logger.info(f"[MTLS P12] Bucket: {settings.s3_bucket_name}, Key: {settings.vendor_mtls_p12_s3_key}")
+
             # Download P12 file
-            response = s3_client.get_object(
-                Bucket=settings.s3_bucket_name,
-                Key=settings.vendor_mtls_p12_s3_key
-            )
-            p12_content = response["Body"].read()
+            try:
+                response = s3_client.get_object(
+                    Bucket=settings.s3_bucket_name,
+                    Key=settings.vendor_mtls_p12_s3_key
+                )
+                p12_content = response["Body"].read()
+                logger.info(f"[MTLS P12] ✓ Downloaded P12 file ({len(p12_content)} bytes)")
+            except s3_client.exceptions.NoSuchKey:
+                error_msg = (
+                    f"P12 certificate not found in S3: s3://{settings.s3_bucket_name}/{settings.vendor_mtls_p12_s3_key}. "
+                    "Please upload the certificate file to S3."
+                )
+                logger.error(f"[MTLS P12] {error_msg}")
+                raise FileNotFoundError(error_msg)
+            except s3_client.exceptions.NoSuchBucket:
+                error_msg = f"S3 bucket not found: {settings.s3_bucket_name}"
+                logger.error(f"[MTLS P12] {error_msg}")
+                raise FileNotFoundError(error_msg)
+            except Exception as s3_error:
+                if "AccessDenied" in str(s3_error) or "403" in str(s3_error):
+                    error_msg = (
+                        f"Access denied to S3: s3://{settings.s3_bucket_name}/{settings.vendor_mtls_p12_s3_key}. "
+                        "Check IAM permissions: ECS task role or EC2 instance role needs s3:GetObject permission."
+                    )
+                    logger.error(f"[MTLS P12] {error_msg}")
+                    raise PermissionError(error_msg)
+                raise
 
             # Extract private key and certificate
             private_key, certificate, ca_certs = pkcs12.load_key_and_certificates(
