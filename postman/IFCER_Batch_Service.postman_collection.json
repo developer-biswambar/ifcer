@@ -183,6 +183,33 @@
 						"description": "Reprocess all failed files from a specific month"
 					},
 					"response": []
+				},
+				{
+					"name": "Re-sign Files",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"file_keys\": [\n    \"uploads/invoice-123.pdf\",\n    \"uploads/invoice-456.pdf\",\n    \"uploads/2025-01/contract.pdf\"\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/resign",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"resign"
+							]
+						},
+						"description": "Re-sign specific files from S3 using batch InfoCert API.\n\nUse this endpoint to:\n- Re-sign files that need updated timestamps\n- Bulk re-signing after certificate renewal\n- Create new signatures for already-signed files\n- Re-certify files for compliance updates\n\nIMPORTANT: This will create NEW signatures and timestamps, even if files were already signed. Use this when you explicitly want fresh signatures.\n\nProvide an array of S3 file keys to re-sign."
+					},
+					"response": []
 				}
 			]
 		},

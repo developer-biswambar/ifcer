@@ -15,7 +15,7 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-router = APIRouter(prefix="/certificates", tags=["certificates"])
+router = APIRouter(prefix="/certificates")
 
 
 # ============================================================================

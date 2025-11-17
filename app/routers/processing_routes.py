@@ -1,30 +1,27 @@
 """Processing endpoints for file certification."""
 
-from fastapi import APIRouter, HTTPException
-from datetime import datetime, timezone
-from typing import List
 import os
-import asyncio
+from datetime import datetime, timezone
+from typing import List, Optional
 
+from fastapi import APIRouter, HTTPException
+
+from app.config import settings
+from app.middleware.correlation_id import get_correlation_id
 from app.models.schemas import (
     DateRangeRequest,
-    SingleFileRequest,
     BatchProcessingResponse,
     FileProcessingResult,
     ProcessingStatus,
-    HealthCheckResponse,
     SignatureRequest,
 )
-from app.services.s3_service import S3Service
-from app.services.hash_service import HashService
-from app.services.signature_service import SignatureService
 from app.services.dynamodb_service import DynamoDBService
-from app.services.validation_service import ValidationService
+from app.services.hash_service import HashService
 from app.services.notification_service import NotificationService
+from app.services.s3_service import S3Service
+from app.services.signature_service import SignatureService
+from app.services.validation_service import ValidationService
 from app.utils.logger import setup_logger, log_exception
-from app.config import settings
-from app.middleware.correlation_id import get_correlation_id
-from app import __version__
 
 logger = setup_logger(__name__)
 
@@ -37,104 +34,6 @@ validation_service = ValidationService()
 notification_service = NotificationService()
 
 router = APIRouter()
-
-
-@router.get("/health", response_model=HealthCheckResponse)
-async def health_check():
-    """
-    Health check endpoint.
-    Verifies connectivity to S3.
-
-    Note: InfoCert does not provide a health check endpoint, so we only verify S3 access.
-    """
-    start_time = datetime.now(timezone.utc)
-    try:
-        logger.info("[HEALTH CHECK] Starting health check")
-
-        # Check S3 access
-        logger.debug("[HEALTH CHECK] Checking S3 bucket access...")
-        s3_accessible = s3_service.check_bucket_access()
-        logger.info(f"[HEALTH CHECK] S3 bucket access: {'✓ OK' if s3_accessible else '✗ FAILED'}")
-
-        if not s3_accessible:
-            logger.error("[HEALTH CHECK] ✗ Health check FAILED - S3 bucket not accessible")
-            raise HTTPException(
-                status_code=503,
-                detail="S3 bucket is not accessible",
-            )
-
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-        logger.info(f"[HEALTH CHECK] ✓ Health check PASSED | Duration: {elapsed:.2f}s")
-
-        return HealthCheckResponse(
-            status="healthy",
-            timestamp=datetime.now(timezone.utc),
-            version=__version__,
-        )
-
-    except Exception as e:
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-        log_exception(logger, e, f"[HEALTH CHECK] Health check failed after {elapsed:.2f}s")
-        raise HTTPException(status_code=503, detail=str(e))
-
-
-@router.post("/recertify", response_model=FileProcessingResult)
-async def recertify_single_file(request: SingleFileRequest):
-    """
-    Recertify a single file from S3.
-
-    FAIL-FAST BEHAVIOR: If processing fails (including P7M creation), the operation
-    will fail immediately with an error. P7M creation is REQUIRED.
-
-    This endpoint allows you to process a single file by its S3 key, useful for:
-    - Recertifying files that previously failed
-    - Re-signing files that need updated timestamps
-    - Processing individual files on demand
-
-    The endpoint:
-    1. Downloads the file from S3 using the provided key
-    2. Computes the file hash
-    3. Sends hash to InfoCert API for signature
-    4. Creates P7M file with ORIGINAL FILE EMBEDDED (REQUIRED - fails if creation fails):
-       - {filename}.p7m: PKCS#7/CAdES signature with original file content embedded
-       - Example: abc.pdf becomes abc.pdf.p7m
-    5. Uploads P7M file back to S3 in signed/ folder
-    6. Saves metadata to DynamoDB (REQUIRED - fails if save fails)
-
-    Args:
-        request: SingleFileRequest with file_key
-
-    Returns:
-        FileProcessingResult with processing outcome (only on success)
-
-    Raises:
-        HTTPException: If processing fails at any step (fail-fast behavior)
-    """
-    start_time = datetime.now(timezone.utc)
-    try:
-        logger.info(f"[RECERTIFY] Starting recertification | File: {request.file_key}")
-
-        # Process the single file - will raise exception if anything fails
-        result = await process_single_file(request.file_key)
-
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-        logger.info(
-            f"[RECERTIFY] ✓ Recertification complete | "
-            f"File: {request.file_key} | "
-            f"Duration: {elapsed:.2f}s | "
-            f"P7M: {result.p7m_file_key}"
-        )
-        return result
-
-    except Exception as e:
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-        log_exception(
-            logger,
-            e,
-            f"[RECERTIFY] ✗ Recertification failed | File: {request.file_key} | Duration: {elapsed:.2f}s"
-        )
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/process", response_model=BatchProcessingResponse)
 async def process_files(request: DateRangeRequest):
@@ -440,13 +339,22 @@ async def get_failed_files(date_partition: Optional[str] = None):
 @router.post("/reprocess-failed", response_model=BatchProcessingResponse)
 async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_partition: Optional[str] = None):
     """
-    Reprocess failed files.
+    Reprocess failed files using BATCH InfoCert API.
+
+    OPTIMIZED BATCH PROCESSING: Uses the same batch signing API as /process endpoint.
+    This dramatically reduces API calls - e.g., 100 files = 2 API calls (vs 100 individual calls).
 
     This endpoint allows you to retry processing of files that previously failed.
     You can either:
     - Provide specific file_keys to reprocess
     - Provide date_partition to reprocess all failures from that month
     - Provide neither to reprocess ALL failed files (use with caution)
+
+    Processing workflow:
+    1. Get list of failed files from DynamoDB or use provided file_keys
+    2. Fetch file metadata from S3 for each file
+    3. Process files in batches using InfoCert batch signing API
+    4. Saves results to DynamoDB and sends SNS notification
 
     Args:
         file_keys: Optional list of specific file_keys to reprocess
@@ -475,15 +383,15 @@ async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_par
         if file_keys:
             # User provided specific file keys
             logger.info(f"[REPROCESS] Reprocessing {len(file_keys)} specific files")
-            files_to_process = file_keys
+            files_to_process_keys = file_keys
         else:
             # Query failed files from DynamoDB
             logger.info(f"[REPROCESS] Querying failed files | Partition: {date_partition or 'ALL'}")
             failed_records = dynamodb_service.get_failed_files(date_partition=date_partition)
-            files_to_process = [record["file_key"] for record in failed_records]
-            logger.info(f"[REPROCESS] Found {len(files_to_process)} failed files to reprocess")
+            files_to_process_keys = [record["file_key"] for record in failed_records]
+            logger.info(f"[REPROCESS] Found {len(files_to_process_keys)} failed files to reprocess")
 
-        if not files_to_process:
+        if not files_to_process_keys:
             logger.info("[REPROCESS] No failed files to reprocess")
             processing_end = datetime.now(timezone.utc)
             return BatchProcessingResponse(
@@ -497,25 +405,73 @@ async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_par
                 duration_seconds=0.0
             )
 
-        total_files = len(files_to_process)
-        logger.info(f"[REPROCESS] Starting reprocessing of {total_files} files...")
+        total_files = len(files_to_process_keys)
+        logger.info(
+            f"[REPROCESS] Starting batch reprocessing of {total_files} files | "
+            f"Batch size: {settings.batch_sign_size}"
+        )
 
-        # Create semaphore for concurrency control
-        semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+        # Convert file keys to S3FileMetadata objects
+        # We need metadata for process_files_in_batches() function
+        logger.debug(f"[REPROCESS] Fetching S3 metadata for {total_files} files...")
+        file_metadata_list = []
 
-        # Create async tasks for all files
-        tasks = [
-            process_single_file_with_semaphore(
-                file_key,
-                index + 1,
-                total_files,
-                semaphore
+        for file_key in files_to_process_keys:
+            try:
+                # Get file metadata from S3
+                s3_response = s3_service.s3_client.head_object(
+                    Bucket=s3_service.bucket_name,
+                    Key=file_key
+                )
+
+                # Create S3FileMetadata object
+                from app.models.schemas import S3FileMetadata
+                file_metadata = S3FileMetadata(
+                    key=file_key,
+                    size=s3_response['ContentLength'],
+                    last_modified=s3_response['LastModified'],
+                    etag=s3_response['ETag'].strip('"')
+                )
+                file_metadata_list.append(file_metadata)
+
+            except Exception as e:
+                # If file doesn't exist in S3, log error and skip
+                logger.error(f"[REPROCESS] Failed to get metadata for {file_key}: {str(e)}")
+                # Add to results as failed
+                results.append(FileProcessingResult(
+                    file_key=file_key,
+                    filename=os.path.basename(file_key),
+                    status=ProcessingStatus.FAILED,
+                    error_message=f"File not found in S3: {str(e)}",
+                    processing_time=0,
+                    p7m_file_key=None,
+                    file_hash=None
+                ))
+
+        logger.info(f"[REPROCESS] Retrieved metadata for {len(file_metadata_list)} files")
+
+        if not file_metadata_list:
+            logger.warning("[REPROCESS] No valid files to reprocess (all metadata fetch failed)")
+            processing_end = datetime.now(timezone.utc)
+            duration = (processing_end - processing_start).total_seconds()
+
+            return BatchProcessingResponse(
+                total_files=total_files,
+                processed_files=len(results),
+                successful_files=0,
+                failed_files=len(results),
+                results=results,
+                processing_start=processing_start,
+                processing_end=processing_end,
+                duration_seconds=duration,
             )
-            for index, file_key in enumerate(files_to_process)
-        ]
 
-        # Execute all tasks in parallel
-        results = await asyncio.gather(*tasks)
+        # Process files using batch signing API (same as /process endpoint)
+        logger.info(f"[REPROCESS] Processing {len(file_metadata_list)} files using batch signing API...")
+        batch_results = await process_files_in_batches(file_metadata_list)
+
+        # Combine results (metadata fetch failures + batch processing results)
+        results.extend(batch_results)
 
         # Calculate statistics
         successful_files = len([r for r in results if r.status == ProcessingStatus.COMPLETED])
@@ -525,7 +481,7 @@ async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_par
         duration = (processing_end - processing_start).total_seconds()
 
         logger.info(
-            f"[REPROCESS COMPLETE] ✓ Reprocessing finished | "
+            f"[REPROCESS COMPLETE] ✓ Batch reprocessing finished | "
             f"Total: {total_files} | "
             f"Successful: {successful_files} | "
             f"Failed: {failed_files} | "
@@ -560,6 +516,192 @@ async def reprocess_failed_files(file_keys: Optional[List[str]] = None, date_par
     except Exception as e:
         elapsed = (datetime.now(timezone.utc) - processing_start).total_seconds()
         log_exception(logger, e, f"[REPROCESS] Failed after {elapsed:.2f}s")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/resign", response_model=BatchProcessingResponse)
+async def resign_files(file_keys: List[str]):
+    """
+    Re-sign specific files from S3 using BATCH InfoCert API.
+
+    OPTIMIZED BATCH PROCESSING: Uses the same batch signing API as /process endpoint.
+    This dramatically reduces API calls - e.g., 100 files = 2 API calls (vs 100 individual calls).
+
+    This endpoint allows you to re-sign any files by providing their S3 keys.
+    Perfect for:
+    - Re-signing files that need updated timestamps
+    - Bulk re-signing of files with new signatures
+    - Re-signing files after certificate renewal
+    - Processing files that were previously signed but need re-certification
+
+    Processing workflow:
+    1. Accepts list of file keys from S3 uploads/ folder
+    2. Fetches file metadata from S3 for each file
+    3. Processes files in batches using InfoCert batch signing API
+    4. Creates new P7M files with fresh signatures and timestamps
+    5. Uploads to S3 signed/ folder
+    6. Saves/updates metadata to DynamoDB
+
+    IMPORTANT: This will create NEW signatures and timestamps, even if files
+    were already signed. Use this when you explicitly want fresh signatures.
+
+    Args:
+        file_keys: List of S3 file keys to re-sign (e.g., ["uploads/file1.pdf", "uploads/file2.pdf"])
+
+    Returns:
+        BatchProcessingResponse with re-signing results
+
+    Example Request:
+        POST /resign
+        {
+            "file_keys": [
+                "uploads/invoice-123.pdf",
+                "uploads/invoice-456.pdf",
+                "uploads/2025-01/contract.pdf"
+            ]
+        }
+    """
+    processing_start = datetime.now(timezone.utc)
+    results: List[FileProcessingResult] = []
+
+    try:
+        if not file_keys:
+            logger.warning("[RESIGN] No file keys provided")
+            processing_end = datetime.now(timezone.utc)
+            return BatchProcessingResponse(
+                total_files=0,
+                processed_files=0,
+                successful_files=0,
+                failed_files=0,
+                results=[],
+                processing_start=processing_start,
+                processing_end=processing_end,
+                duration_seconds=0.0,
+                message="No file keys provided for re-signing."
+            )
+
+        total_files = len(file_keys)
+        logger.info(
+            f"[RESIGN] Starting batch re-signing of {total_files} files | "
+            f"Batch size: {settings.batch_sign_size}"
+        )
+
+        # Convert file keys to S3FileMetadata objects
+        # We need metadata for process_files_in_batches() function
+        logger.debug(f"[RESIGN] Fetching S3 metadata for {total_files} files...")
+        file_metadata_list = []
+
+        for file_key in file_keys:
+            try:
+                # Get file metadata from S3
+                s3_response = s3_service.s3_client.head_object(
+                    Bucket=s3_service.bucket_name,
+                    Key=file_key
+                )
+
+                # Create S3FileMetadata object
+                from app.models.schemas import S3FileMetadata
+                file_metadata = S3FileMetadata(
+                    key=file_key,
+                    size=s3_response['ContentLength'],
+                    last_modified=s3_response['LastModified'],
+                    etag=s3_response['ETag'].strip('"')
+                )
+                file_metadata_list.append(file_metadata)
+
+            except Exception as e:
+                # If file doesn't exist in S3, log error and skip
+                logger.error(f"[RESIGN] Failed to get metadata for {file_key}: {str(e)}")
+                # Add to results as failed
+                results.append(FileProcessingResult(
+                    file_key=file_key,
+                    filename=os.path.basename(file_key),
+                    status=ProcessingStatus.FAILED,
+                    error_message=f"File not found in S3: {str(e)}",
+                    processing_time=0,
+                    p7m_file_key=None,
+                    file_hash=None
+                ))
+
+        logger.info(f"[RESIGN] Retrieved metadata for {len(file_metadata_list)} files")
+
+        if not file_metadata_list:
+            logger.warning("[RESIGN] No valid files to re-sign (all metadata fetch failed)")
+            processing_end = datetime.now(timezone.utc)
+            duration = (processing_end - processing_start).total_seconds()
+
+            return BatchProcessingResponse(
+                total_files=total_files,
+                processed_files=len(results),
+                successful_files=0,
+                failed_files=len(results),
+                results=results,
+                processing_start=processing_start,
+                processing_end=processing_end,
+                duration_seconds=duration,
+                message=f"All {total_files} files failed metadata fetch - none could be re-signed."
+            )
+
+        # Process files using batch signing API (same as /process endpoint)
+        logger.info(f"[RESIGN] Processing {len(file_metadata_list)} files using batch signing API...")
+        batch_results = await process_files_in_batches(file_metadata_list)
+
+        # Combine results (metadata fetch failures + batch processing results)
+        results.extend(batch_results)
+
+        # Calculate statistics
+        successful_files = len([r for r in results if r.status == ProcessingStatus.COMPLETED])
+        failed_files = len([r for r in results if r.status == ProcessingStatus.FAILED])
+
+        processing_end = datetime.now(timezone.utc)
+        duration = (processing_end - processing_start).total_seconds()
+
+        logger.info(
+            f"[RESIGN COMPLETE] ✓ Batch re-signing finished | "
+            f"Total: {total_files} | "
+            f"Successful: {successful_files} | "
+            f"Failed: {failed_files} | "
+            f"Duration: {duration:.2f}s"
+        )
+
+        # Build user-friendly message
+        message_parts = []
+        if successful_files > 0:
+            message_parts.append(f"{successful_files} files successfully re-signed")
+        if failed_files > 0:
+            message_parts.append(f"{failed_files} files failed")
+
+        message = ". ".join(message_parts) + "." if message_parts else "No files processed."
+
+        # Send SNS notification
+        try:
+            notification_service.send_batch_completion_notification(
+                total_files=total_files,
+                successful_files=successful_files,
+                failed_files=failed_files,
+                results=results,
+                duration_seconds=duration,
+                date_range={"type": "resign", "file_count": total_files},
+                correlation_id=get_correlation_id()
+            )
+        except Exception as sns_error:
+            log_exception(logger, sns_error, "[SNS] Failed to send resign notification (non-critical)")
+
+        return BatchProcessingResponse(
+            total_files=total_files,
+            processed_files=len(results),
+            successful_files=successful_files,
+            failed_files=failed_files,
+            results=results,
+            processing_start=processing_start,
+            processing_end=processing_end,
+            duration_seconds=duration,
+            message=message,
+        )
+
+    except Exception as e:
+        elapsed = (datetime.now(timezone.utc) - processing_start).total_seconds()
+        log_exception(logger, e, f"[RESIGN] Failed after {elapsed:.2f}s")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -790,95 +932,6 @@ async def process_files_in_batches(files: List) -> List[FileProcessingResult]:
         )
 
     return all_results
-
-
-async def process_single_file_with_semaphore(
-    file_key: str,
-    file_index: int,
-    total_files: int,
-    semaphore: asyncio.Semaphore
-) -> FileProcessingResult:
-    """
-    Process a single file with semaphore-based concurrency control.
-
-    This wrapper function:
-    1. Acquires semaphore before processing (blocks if limit reached)
-    2. Logs progress with percentage
-    3. Calls process_single_file to do actual work
-    4. Catches errors and saves failed records to DynamoDB (continue-on-error)
-    5. Releases semaphore when done
-
-    Args:
-        file_key: S3 file key
-        file_index: File index in batch (1-based)
-        total_files: Total files in batch
-        semaphore: Asyncio semaphore for concurrency control
-
-    Returns:
-        FileProcessingResult with processing outcome (success or failure)
-
-    Note:
-        This function does NOT raise exceptions. Failures are captured as
-        FileProcessingResult with status="failed" and stored in DynamoDB.
-    """
-    # Acquire semaphore (will block if max concurrent limit reached)
-    async with semaphore:
-        start_time = datetime.now(timezone.utc)
-        logger.info(
-            f"[BATCH PROGRESS] Processing file {file_index}/{total_files} ({(file_index/total_files*100):.1f}%) | "
-            f"File: {file_key}"
-        )
-
-        try:
-            # Process the file (may raise exception)
-            result = await process_single_file(file_key)
-
-            logger.debug(
-                f"[BATCH PROGRESS] File {file_index}/{total_files} completed | "
-                f"Status: {result.status.value} | "
-                f"File: {file_key}"
-            )
-
-            return result
-
-        except Exception as e:
-            # Continue-on-error: Save failure to DynamoDB and continue batch
-            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-            error_message = str(e)
-            error_type = type(e).__name__
-
-            logger.error(
-                f"[BATCH PROGRESS] File {file_index}/{total_files} FAILED | "
-                f"File: {file_key} | "
-                f"Error: {error_type}: {error_message} | "
-                f"Duration: {elapsed:.2f}s"
-            )
-
-            # Save failed record to DynamoDB
-            try:
-                dynamodb_service.save_certification(
-                    file_key=file_key,
-                    status="failed",
-                    error_message=error_message,
-                    error_type=error_type
-                )
-                logger.debug(f"[BATCH PROGRESS] Failed record saved to DynamoDB for {file_key}")
-            except Exception as db_error:
-                log_exception(logger, db_error, f"Failed to save error record to DynamoDB for {file_key}")
-
-            # Extract filename from file_key
-            filename = os.path.basename(file_key)
-
-            # Return failed result (don't raise exception - continue batch)
-            return FileProcessingResult(
-                file_key=file_key,
-                filename=filename,
-                status=ProcessingStatus.FAILED,
-                error_message=error_message,
-                processing_time=elapsed,
-                p7m_file_key=None,
-                file_hash=None
-            )
 
 
 async def process_single_file(file_key: str) -> FileProcessingResult:

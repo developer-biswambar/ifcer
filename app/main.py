@@ -12,11 +12,104 @@ from app import __version__
 # Initialize logger
 logger = setup_logger(__name__)
 
-# Initialize FastAPI app
+# OpenAPI documentation configuration
+DESCRIPTION = """
+## IFCER Batch Service API
+
+Batch service for **digital signature** and **timestamping** of files for Italian register submission.
+
+This service integrates with InfoCert's Remote Signature API to provide CAdES-BES compliant digital signatures
+with RFC 3161 timestamps for regulatory compliance.
+
+### Key Features
+
+* **Batch Processing**: Process multiple files efficiently using batch signing API
+* **Smart Processing**: Skip already-processed files to avoid unnecessary API costs
+* **Fail-Safe**: Continue-on-error behavior with detailed error tracking
+* **CAdES-BES Compliance**: ETSI EN 319 122-1 compliant signatures
+* **Timestamping**: RFC 3161 compliant timestamps from InfoCert TSA
+* **S3 Integration**: Seamless file upload/download from AWS S3
+* **DynamoDB Tracking**: Persistent certification records with optional TTL
+* **mTLS Security**: Mutual TLS authentication with InfoCert API
+
+### Processing Workflow
+
+1. **Upload files** to S3 `uploads/` folder
+2. **Call /process** endpoint with date range
+3. Service downloads files, computes hashes, and sends to InfoCert
+4. InfoCert returns digital signatures and timestamps
+5. Service creates P7M files (PKCS#7 with embedded original file)
+6. P7M files uploaded to S3 `signed/` folder
+7. Metadata saved to DynamoDB
+
+### API Endpoints Overview
+
+* **Processing**: Batch processing, recertification, and reprocessing
+* **Files**: File verification and download operations
+* **Certificates**: Certificate management and verification
+
+### Authentication
+
+All InfoCert API calls use:
+- **mTLS**: Mutual TLS with client certificate
+- **Bearer Token**: SAT (Signature Activation Token)
+- **X-signer-id**: Credential ID header
+- **PIN**: Signature PIN in request body
+
+### Support
+
+For issues or questions, contact the platform team.
+"""
+
+# API tags metadata for better organization
+tags_metadata = [
+    {
+        "name": "Processing",
+        "description": "**Core processing endpoints** for batch file certification, recertification, and reprocessing. "
+                       "These endpoints handle the main workflow of signing files with InfoCert.",
+    },
+    {
+        "name": "Files",
+        "description": "**File management endpoints** for verifying P7M signatures, downloading signed files, "
+                       "and querying certification records from DynamoDB.",
+    },
+    {
+        "name": "Certificates",
+        "description": "**Certificate management endpoints** for fetching and verifying InfoCert signing certificates. "
+                       "Used for certificate validation and troubleshooting.",
+    },
+]
+
+# Initialize FastAPI app with enhanced configuration
 app = FastAPI(
     title=settings.app_name,
-    description="Batch service for digital signature and timestamping of files for Italian register submission",
+    description=DESCRIPTION,
     version=__version__,
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    contact={
+        "name": "IFCER Platform Team",
+        "email": "support@example.com",
+    },
+    license_info={
+        "name": "Proprietary",
+    },
+    terms_of_service="https://example.com/terms",
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1,  # Hide schemas section by default
+        "docExpansion": "list",  # Expand only tags by default
+        "filter": True,  # Enable search/filter
+        "syntaxHighlight.theme": "monokai",  # Code syntax highlighting theme
+        "tryItOutEnabled": True,  # Enable "Try it out" by default
+        "persistAuthorization": True,  # Persist authorization between page refreshes
+    },
+    redoc_options={
+        "hideDownloadButton": False,  # Show OpenAPI spec download button
+        "expandResponses": "200,201",  # Auto-expand success responses
+        "pathInMiddlePanel": True,  # Show path in middle panel
+    },
 )
 
 # Add middleware (order matters - correlation ID should be first to capture all requests)
