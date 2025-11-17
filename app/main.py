@@ -105,11 +105,6 @@ app = FastAPI(
         "tryItOutEnabled": True,  # Enable "Try it out" by default
         "persistAuthorization": True,  # Persist authorization between page refreshes
     },
-    redoc_options={
-        "hideDownloadButton": False,  # Show OpenAPI spec download button
-        "expandResponses": "200,201",  # Auto-expand success responses
-        "pathInMiddlePanel": True,  # Show path in middle panel
-    },
 )
 
 # Add middleware (order matters - correlation ID should be first to capture all requests)
