@@ -8,28 +8,178 @@
 
 ## Table of Contents
 
-1. [Digital Signatures Fundamentals](#1-digital-signatures-fundamentals)
-2. [CAdES Standard Overview](#2-cades-standard-overview)
-3. [P7M/PKCS#7 File Structure](#3-p7mpkcs7-file-structure)
-4. [Implementation Architecture](#4-implementation-architecture)
-5. [File Signing Workflow](#5-file-signing-workflow)
-6. [P7M File Creation Process](#6-p7m-file-creation-process)
-7. [Signature Verification Process](#7-signature-verification-process)
-8. [Code Examples and Implementation Details](#8-code-examples-and-implementation-details)
-9. [Troubleshooting and Debugging](#9-troubleshooting-and-debugging)
+1. [Glossary of Technical Terms](#1-glossary-of-technical-terms)
+2. [Digital Signatures Fundamentals](#2-digital-signatures-fundamentals)
+3. [CAdES Standard Overview](#3-cades-standard-overview)
+4. [P7M/PKCS#7 File Structure](#4-p7mpkcs7-file-structure)
+5. [Implementation Architecture](#5-implementation-architecture)
+6. [File Signing Workflow](#6-file-signing-workflow)
+7. [P7M File Creation Process](#7-p7m-file-creation-process)
+8. [Signature Verification Process](#8-signature-verification-process)
+9. [Code Examples and Implementation Details](#9-code-examples-and-implementation-details)
+10. [Troubleshooting and Debugging](#10-troubleshooting-and-debugging)
 
 ---
 
-## 1. Digital Signatures Fundamentals
+## 1. Glossary of Technical Terms
 
-### 1.1 What is a Digital Signature?
+### Encoding and Data Formats
+
+**ASN.1 (Abstract Syntax Notation One)**
+- A standard language for describing data structures
+- Think of it like JSON or XML, but for binary data
+- Defines **HOW** to structure data (e.g., "a certificate is a SEQUENCE containing X, Y, Z")
+- Example: `SEQUENCE { name: String, age: Integer }` describes the structure
+- Used to define certificate, signature, and P7M file structures
+
+**DER (Distinguished Encoding Rules)**
+- A way to convert ASN.1 structures into **binary bytes**
+- Think of it as "ASN.1 to binary compiler"
+- Ensures everyone encodes the same structure the exact same way (deterministic)
+- Example: The text "Hello" in DER might be `0x04 0x05 0x48 0x65 0x6C 0x6C 0x6F`
+- **All P7M files are DER-encoded**
+
+**PEM (Privacy Enhanced Mail)**
+- DER data encoded in **Base64** with header/footer lines
+- Human-readable format (looks like text)
+- Example:
+  ```
+  -----BEGIN CERTIFICATE-----
+  MIIDXTCCAkWgAwIBAgIJAKJ... (Base64 encoded data)
+  -----END CERTIFICATE-----
+  ```
+- Used for certificates in text files
+
+**Base64**
+- Converts binary data to text using 64 characters (A-Z, a-z, 0-9, +, /)
+- Makes binary data safe for text-based protocols (email, JSON, HTTP)
+- Example: Binary `0x48656C6C6F` becomes text `SGVsbG8=`
+
+### Cryptographic Standards
+
+**PKCS (Public Key Cryptography Standards)**
+- A series of standards for public key cryptography
+- Created by RSA Security Inc.
+- **PKCS#7**: Standard for cryptographic messages (our P7M files)
+- **PKCS#12**: Standard for storing private keys and certificates (.p12 files)
+
+**CMS (Cryptographic Message Syntax)**
+- Modern name for PKCS#7
+- RFC 5652 standard
+- Defines how to create signed, encrypted, or authenticated messages
+- **Our P7M files are CMS/PKCS#7 SignedData structures**
+
+**OID (Object Identifier)**
+- A globally unique identifier for cryptographic algorithms and attributes
+- Like a "phone number" for identifying things in cryptography
+- Format: Dotted decimal notation (e.g., `1.2.840.113549.1.7.2`)
+- Examples:
+  - `2.16.840.1.101.3.4.2.1` = SHA-256 hash algorithm
+  - `1.2.840.113549.1.1.11` = RSA with SHA-256 signature
+  - `1.2.840.113549.1.9.4` = message-digest attribute
+
+### Certificates and PKI
+
+**X.509**
+- Standard format for digital certificates
+- Defines what information a certificate must contain
+- Contains: Public key, owner identity, issuer identity, validity period, signature
+- **All InfoCert certificates are X.509 format**
+
+**CA (Certificate Authority)**
+- A trusted organization that issues digital certificates
+- InfoCert is a CA
+- Verifies identity before issuing certificates
+- Signs certificates with their own private key
+
+**QTSP (Qualified Trust Service Provider)**
+- A Certificate Authority certified under EU eIDAS regulation
+- Highest level of trust in the EU
+- Can issue legally-binding digital signatures
+- **InfoCert is a QTSP**
+
+**mTLS (Mutual TLS)**
+- Both client and server authenticate each other using certificates
+- Regular TLS: Only server has a certificate (like HTTPS websites)
+- mTLS: Both parties have certificates and verify each other
+- **We use mTLS to authenticate with InfoCert API**
+
+### Digital Signature Components
+
+**DTBS (Data To Be Signed)**
+- The actual data that gets signed with the private key
+- In our case: The SignedAttributes structure (NOT the original file!)
+- Also called "SignedAttributes" in PKCS#7/CMS
+- Contains: content-type, message-digest, signing-time, signing-certificate-v2
+
+**HSM (Hardware Security Module)**
+- A physical device that stores private keys securely
+- Private keys never leave the HSM
+- All signing operations happen inside the HSM
+- **InfoCert's private keys are stored in HSMs**
+
+**RFC (Request for Comments)**
+- Technical documents that describe Internet standards
+- Example: RFC 5652 defines CMS/PKCS#7
+- Published by IETF (Internet Engineering Task Force)
+
+### European Standards
+
+**eIDAS (electronic IDentification, Authentication and trust Services)**
+- EU Regulation 910/2014
+- Makes digital signatures legally equivalent to handwritten signatures
+- Defines three levels: Simple, Advanced, Qualified
+- **We create Qualified Electronic Signatures (highest level)**
+
+**ETSI (European Telecommunications Standards Institute)**
+- European standards organization
+- Publishes technical standards for telecommunications
+- **ETSI EN 319 122-1** defines CAdES (our digital signature format)
+
+**CAdES (CMS Advanced Electronic Signatures)**
+- Extension of CMS/PKCS#7 for European legal requirements
+- Adds extra attributes for long-term validity
+- Multiple levels: BES, T, LT, LTA
+- **We implement CAdES-BES**
+
+### Our Specific Terms
+
+**P7M File**
+- File extension for PKCS#7/CMS signed data
+- Contains: Original file + Signature + Certificate
+- "Enveloped" signature (file is embedded inside)
+- Binary format (DER-encoded)
+- **This is what we create and upload to S3**
+
+**SignedAttributes**
+- A set of attributes that are included in the signature
+- Contains metadata about the signature
+- In CAdES-BES: content-type, message-digest, signing-time, signing-certificate-v2
+- **This is the DTBS - what actually gets signed**
+
+**InfoCert hashSignatures API**
+- InfoCert's API endpoint for signing document hashes
+- "hash" = we send a hash, not the full document
+- InfoCert never sees the actual document content
+- Returns: Signature bytes + optional timestamp token
+
+---
+
+## 2. Digital Signatures Fundamentals
+
+### 2.1 What is a Digital Signature?
 
 A digital signature is a cryptographic mechanism that provides:
-- **Authentication**: Verifies the identity of the signer
-- **Integrity**: Ensures the document hasn't been modified
-- **Non-repudiation**: Signer cannot deny having signed the document
+- **Authentication**: Verifies the identity of the signer (like a handwritten signature)
+- **Integrity**: Ensures the document hasn't been modified (like a tamper-evident seal)
+- **Non-repudiation**: Signer cannot deny having signed the document (legal proof)
 
-### 1.2 How Digital Signatures Work
+Think of it like a wax seal on an envelope:
+- Only you can create your seal (private key)
+- Anyone can verify it's your seal (public key)
+- If someone opens and reseals it, the seal breaks (integrity)
+
+### 2.2 How Digital Signatures Work
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -51,9 +201,9 @@ Attach to Document
 Signed Document (.p7m file)
 ```
 
-### 1.3 Key Cryptographic Components
+### 2.3 Key Cryptographic Components
 
-**Hash Function (SHA-256)**:
+**Hash Function (SHA-256)** (like a fingerprint for files):
 - Input: Document of any size
 - Output: Fixed 256-bit (32-byte) hash
 - Properties: One-way, collision-resistant, deterministic
@@ -73,9 +223,9 @@ Signed Document (.p7m file)
 
 ---
 
-## 2. CAdES Standard Overview
+## 3. CAdES Standard Overview
 
-### 2.1 What is CAdES?
+### 3.1 What is CAdES?
 
 **CAdES** = **C**MS **Ad**vanced **E**lectronic **S**ignatures
 
@@ -84,7 +234,7 @@ Signed Document (.p7m file)
 - **Based on**: CMS (Cryptographic Message Syntax) - RFC 5652
 - **Compliance**: eIDAS Regulation (EU 910/2014)
 
-### 2.2 CAdES Signature Levels
+### 3.2 CAdES Signature Levels
 
 | Level | Name | Description | Our Implementation |
 |-------|------|-------------|-------------------|
@@ -96,7 +246,7 @@ Signed Document (.p7m file)
 
 **We implement CAdES-BES** (Basic Electronic Signature with signing-certificate-v2 attribute).
 
-### 2.3 CAdES-BES Required Attributes
+### 3.3 CAdES-BES Required Attributes
 
 CAdES-BES requires these **SignedAttributes** (part of DTBS):
 
@@ -119,9 +269,9 @@ CAdES-BES requires these **SignedAttributes** (part of DTBS):
 
 ---
 
-## 3. P7M/PKCS#7 File Structure
+## 4. P7M/PKCS#7 File Structure
 
-### 3.1 What is P7M?
+### 10.1 What is P7M?
 
 **P7M** is a file extension for **PKCS#7** (Public Key Cryptography Standards #7) signed data.
 
@@ -130,7 +280,7 @@ CAdES-BES requires these **SignedAttributes** (part of DTBS):
 - **Standard**: RFC 5652 (CMS), RFC 2315 (PKCS#7)
 - **File Extension**: `.p7m`
 
-### 3.2 P7M vs P7S
+### 10.2 P7M vs P7S
 
 | Aspect | P7M (Enveloped) | P7S (Detached) |
 |--------|----------------|----------------|
@@ -145,7 +295,7 @@ CAdES-BES requires these **SignedAttributes** (part of DTBS):
 - Italian regulations require self-contained signature files
 - Simplifies verification (no need to manage separate files)
 
-### 3.3 P7M File Structure (ASN.1)
+### 5.3 P7M File Structure (ASN.1)
 
 ```
 ContentInfo ::= SEQUENCE {
@@ -178,7 +328,7 @@ SignerInfo ::= SEQUENCE {
 }
 ```
 
-### 3.4 Key Components Explained
+### 4.4 Key Components Explained
 
 **EncapsulatedContentInfo (eContent)**:
 - Contains the **original file bytes** embedded inside the P7M
@@ -199,9 +349,9 @@ SignerInfo ::= SEQUENCE {
 
 ---
 
-## 4. Implementation Architecture
+## 5. Implementation Architecture
 
-### 4.1 Service Overview
+### 10.1 Service Overview
 
 Our implementation uses a **layered service architecture**:
 
@@ -221,14 +371,14 @@ Our implementation uses a **layered service architecture**:
 └─────────────────────────┘      └──────────────────────────┘
 ```
 
-### 4.2 File Locations
+### 10.2 File Locations
 
 - **SignatureService**: `app/services/signature_service.py`
 - **P7MService**: `app/services/p7m_service.py`
 - **CertificateService**: `app/services/certificate_service.py`
 - **ValidationService**: `app/services/validation_service.py`
 
-### 4.3 Dependencies
+### 5.3 Dependencies
 
 ```python
 # ASN.1 encoding/decoding
@@ -244,9 +394,9 @@ import requests  # InfoCert API calls with mTLS
 
 ---
 
-## 5. File Signing Workflow
+## 6. File Signing Workflow
 
-### 5.1 High-Level Workflow
+### 10.1 High-Level Workflow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -290,7 +440,7 @@ import requests  # InfoCert API calls with mTLS
     Return .p7m file
 ```
 
-### 5.2 Detailed Step-by-Step Process
+### 10.2 Detailed Step-by-Step Process
 
 #### Step 1: Fetch Signing Certificate
 
@@ -500,9 +650,9 @@ See [Section 6: P7M File Creation Process](#6-p7m-file-creation-process) for det
 
 ---
 
-## 6. P7M File Creation Process
+## 7. P7M File Creation Process
 
-### 6.1 P7MService.create_p7m_from_signature()
+### 10.1 P7MService.create_p7m_from_signature()
 
 **Code**: `app/services/p7m_service.py:21-154`
 
@@ -652,7 +802,7 @@ p7m_bytes = content_info.dump()
 - This is the `.p7m` file
 - Can be saved directly to S3
 
-### 6.2 P7M File Size
+### 10.2 P7M File Size
 
 **Example**:
 - Original file: 100 KB
@@ -666,9 +816,9 @@ p7m_bytes = content_info.dump()
 
 ---
 
-## 7. Signature Verification Process
+## 8. Signature Verification Process
 
-### 7.1 Verification Workflow
+### 10.1 Verification Workflow
 
 **Code**: `app/services/validation_service.py`
 
@@ -715,7 +865,7 @@ p7m_bytes = content_info.dump()
     Signature is VALID
 ```
 
-### 7.2 Detailed Verification Steps
+### 10.2 Detailed Verification Steps
 
 #### Step 1: Verify P7M Structure
 
@@ -853,9 +1003,9 @@ def _validate_certificate(self, cert_info: Dict) -> Tuple[bool, Dict]:
 
 ---
 
-## 8. Code Examples and Implementation Details
+## 9. Code Examples and Implementation Details
 
-### 8.1 Single File Signing
+### 10.1 Single File Signing
 
 **Code**: `signature_service.py:124-369`
 
@@ -885,7 +1035,7 @@ with open("example.pdf.p7m", "wb") as f:
     f.write(signature_response.p7m_content)
 ```
 
-### 8.2 Batch Signing
+### 10.2 Batch Signing
 
 **Code**: `signature_service.py:371-617`
 
@@ -941,7 +1091,7 @@ result = next(
 )
 ```
 
-### 8.3 Verifying a P7M File
+### 10.3 Verifying a P7M File
 
 ```python
 validation_service = ValidationService()
@@ -971,9 +1121,9 @@ else:
 
 ---
 
-## 9. Troubleshooting and Debugging
+## 10. Troubleshooting and Debugging
 
-### 9.1 Common Issues
+### 10.1 Common Issues
 
 #### Issue 1: "Invalid P7M structure"
 
@@ -1061,7 +1211,7 @@ for attr in signed_attrs:
 
 See: `docs/INFOCERT_MTLS_SECURITY_EVIDENCE.md`
 
-### 9.2 Debugging Tools
+### 10.2 Debugging Tools
 
 #### ASN.1 Parser
 
@@ -1087,7 +1237,7 @@ openssl smime -verify -in example.pdf.p7m -inform DER -noverify -out extracted.p
 openssl smime -verify -in example.pdf.p7m -inform DER -CAfile infocert_ca.pem
 ```
 
-### 9.3 Logging
+### 10.3 Logging
 
 Our implementation logs at multiple levels:
 
