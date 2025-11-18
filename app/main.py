@@ -86,8 +86,9 @@ app = FastAPI(
     description=DESCRIPTION,
     version=__version__,
     openapi_tags=tags_metadata,
+    root_path=settings.root_path,  # For ALB path rewriting (e.g., "/infocert")
     docs_url="/docs",
-    redoc_url="/redoc",
+    redoc_url=None,  # ReDoc disabled - use Swagger UI only
     openapi_url="/openapi.json",
     contact={
         "name": "IFCER Platform Team",
@@ -123,6 +124,7 @@ async def root():
         "service": settings.app_name,
         "version": __version__,
         "status": "running",
+        "root_path": settings.root_path or "/",
     }
 
 

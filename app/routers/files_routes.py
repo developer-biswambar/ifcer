@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import os
 import io
+import uuid
 
 from app.models.schemas import (
     FileDetailsRequest,
@@ -16,7 +17,7 @@ from app.models.schemas import (
 from app.services.s3_service import S3Service
 from app.services.dynamodb_service import DynamoDBService
 from app.utils.logger import setup_logger, log_exception
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = setup_logger(__name__)
 
@@ -29,8 +30,7 @@ router = APIRouter()
 
 @router.post("/upload")
 async def upload_file(
-    file: UploadFile = File(..., description="File to upload"),
-    prefix: Optional[str] = Form(None, description="Optional subfolder under uploads/ (e.g., 'invoices', 'contracts')")
+    file: UploadFile = File(..., description="File to upload")
 ):
     """
     Upload a single file to S3 for certification.
@@ -39,9 +39,8 @@ async def upload_file(
     After upload, you can process the file using the /process endpoint.
 
     **File Organization:**
-    - Without prefix: uploads to `uploads/{filename}`
-    - With prefix: uploads to `uploads/{prefix}/{filename}`
-    - This allows organizing files by type, client, or date
+    - All files are uploaded to: `uploads/{filename}`
+    - Files are stored with their original filename
 
     **Workflow:**
     1. Upload file(s) using this endpoint
@@ -50,21 +49,15 @@ async def upload_file(
 
     Args:
         file: File to upload (multipart/form-data)
-        prefix: Optional subfolder (e.g., "2025-01" or "client-abc")
 
     Returns:
         Upload confirmation with S3 file key and metadata
 
     Example:
         ```bash
-        # Upload without prefix
+        # Upload file
         curl -X POST "http://localhost:8000/upload" \\
              -F "file=@invoice.pdf"
-
-        # Upload with prefix
-        curl -X POST "http://localhost:8000/upload" \\
-             -F "file=@invoice.pdf" \\
-             -F "prefix=invoices/2025-01"
         ```
     """
     try:
@@ -72,13 +65,8 @@ async def upload_file(
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is required")
 
-        # Build S3 key
-        if prefix:
-            # Remove leading/trailing slashes from prefix
-            clean_prefix = prefix.strip("/")
-            s3_key = f"uploads/{clean_prefix}/{file.filename}"
-        else:
-            s3_key = f"uploads/{file.filename}"
+        # Build S3 key - always upload to uploads/ folder with original filename
+        s3_key = f"uploads/{file.filename}"
 
         logger.info(f"[UPLOAD] Starting file upload | Filename: {file.filename} | S3 key: {s3_key}")
 
@@ -124,8 +112,7 @@ async def upload_file(
                 "process_endpoint": "/process",
                 "example_request": {
                     "start_date": datetime.now(timezone.utc).isoformat(),
-                    "end_date": datetime.now(timezone.utc).isoformat(),
-                    "prefix": prefix
+                    "end_date": datetime.now(timezone.utc).isoformat()
                 }
             }
         }
@@ -139,19 +126,18 @@ async def upload_file(
 
 @router.post("/upload-multiple")
 async def upload_multiple_files(
-    files: List[UploadFile] = File(..., description="Multiple files to upload"),
-    prefix: Optional[str] = Form(None, description="Optional subfolder under uploads/")
+    files: List[UploadFile] = File(..., description="Multiple files to upload")
 ):
     """
     Upload multiple files to S3 for certification in batch.
 
     This endpoint uploads multiple files to the S3 bucket in the "uploads/" folder.
-    All files are uploaded to the same prefix (subfolder).
+    All files are stored with their original filenames.
 
     **Benefits:**
     - Upload many files at once
-    - All files go to the same location for easy batch processing
     - Reduces number of API calls compared to single uploads
+    - All files stored in uploads/ folder for easy batch processing
 
     **Limits:**
     - Maximum file size: depends on your FastAPI configuration (default: unlimited)
@@ -160,7 +146,6 @@ async def upload_multiple_files(
 
     Args:
         files: List of files to upload (multipart/form-data)
-        prefix: Optional subfolder for all files (e.g., "2025-01" or "client-abc")
 
     Returns:
         Upload summary with details for each file
@@ -170,8 +155,7 @@ async def upload_multiple_files(
         curl -X POST "http://localhost:8000/upload-multiple" \\
              -F "files=@invoice1.pdf" \\
              -F "files=@invoice2.pdf" \\
-             -F "files=@contract.docx" \\
-             -F "prefix=invoices/2025-01"
+             -F "files=@contract.docx"
         ```
     """
     try:
@@ -180,7 +164,7 @@ async def upload_multiple_files(
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
 
-        logger.info(f"[UPLOAD BATCH] Starting batch upload | File count: {len(files)} | Prefix: {prefix or 'None'}")
+        logger.info(f"[UPLOAD BATCH] Starting batch upload | File count: {len(files)}")
 
         upload_results = []
         total_size = 0
@@ -200,12 +184,8 @@ async def upload_multiple_files(
                     failed_uploads += 1
                     continue
 
-                # Build S3 key
-                if prefix:
-                    clean_prefix = prefix.strip("/")
-                    s3_key = f"uploads/{clean_prefix}/{file.filename}"
-                else:
-                    s3_key = f"uploads/{file.filename}"
+                # Build S3 key - always upload to uploads/ folder with original filename
+                s3_key = f"uploads/{file.filename}"
 
                 # Read file content
                 file_content = await file.read()
@@ -284,8 +264,7 @@ async def upload_multiple_files(
                 "process_endpoint": "/process",
                 "example_request": {
                     "start_date": datetime.now(timezone.utc).isoformat(),
-                    "end_date": datetime.now(timezone.utc).isoformat(),
-                    "prefix": prefix
+                    "end_date": datetime.now(timezone.utc).isoformat()
                 }
             }
         }

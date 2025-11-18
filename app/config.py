@@ -39,9 +39,10 @@ class Settings(BaseSettings):
     """
 
     # ==================== Application Settings ====================
-    # Loaded from: APP_NAME, LOG_LEVEL
+    # Loaded from: APP_NAME, LOG_LEVEL, ROOT_PATH
     app_name: str = "IFCER Batch Service"
     log_level: str = "INFO"
+    root_path: str = ""  # Set to "/infocert" in production for ALB path rewriting
 
     # ==================== AWS Settings ====================
     # Loaded from: AWS_REGION, S3_BUCKET_NAME, AWS_ENDPOINT_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
