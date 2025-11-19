@@ -59,22 +59,22 @@ swagger_ui_parameters = {
 - ✅ "Try it out" enabled by default for testing
 - ✅ Authorization persists across page refreshes
 
-### 4. ReDoc Customization
+### 4. ReDoc Configuration
 
-The following ReDoc options are configured:
+ReDoc is enabled at `/redoc` endpoint with default configuration:
 
 ```python
-redoc_options = {
-    "hideDownloadButton": False,      # Show OpenAPI spec download button
-    "expandResponses": "200,201",     # Auto-expand success responses
-    "pathInMiddlePanel": True,        # Show path in middle panel
-}
+redoc_url="/redoc"
 ```
 
 **Features:**
-- ✅ Download OpenAPI specification button
-- ✅ Success responses (200, 201) auto-expanded
-- ✅ Enhanced path visibility
+- ✅ Three-panel responsive layout
+- ✅ Beautiful API documentation
+- ✅ Markdown rendering support
+- ✅ Automatic schema generation
+- ✅ Search functionality
+
+**Note**: Advanced `redoc_options` customization is not available in FastAPI 0.116.1. The default ReDoc configuration provides excellent documentation out of the box.
 
 ## Usage Examples
 
